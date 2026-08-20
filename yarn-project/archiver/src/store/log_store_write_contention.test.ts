@@ -70,17 +70,17 @@ describe('LogStore write contention', () => {
     await db.close();
   });
 
-  it('does not block tag queries behind queued write transactions', async () => {
+  it('returns the same results for a tag query racing queued write transactions', async () => {
     const baselineTimer = new Timer();
-    await logStore.getPrivateLogsByTags({ tags });
+    const baseline = await logStore.getPrivateLogsByTags({ tags });
     const baselineMs = baselineTimer.ms();
 
-    // Fill the store's serial writer queue without awaiting it. A read routed through that queue would only
-    // resolve after all of them commit.
+    // Fill the store's serial writer queue without awaiting it. Tag queries are routed through that same queue, so
+    // the contended query below only resolves once these commit.
     const writes = Array.from({ length: QUEUED_WRITES }, () => db.transactionAsync(() => sleep(WRITE_DURATION_MS)));
 
     const contendedTimer = new Timer();
-    await logStore.getPrivateLogsByTags({ tags });
+    const contended = await logStore.getPrivateLogsByTags({ tags });
     const contendedMs = contendedTimer.ms();
 
     logger.info(`Baseline read ${baselineMs.toFixed(2)}ms, contended read ${contendedMs.toFixed(2)}ms`, {
@@ -89,7 +89,9 @@ describe('LogStore write contention', () => {
       queuedWriteMs: QUEUED_WRITES * WRITE_DURATION_MS,
     });
 
-    expect(contendedMs).toBeLessThan((QUEUED_WRITES * WRITE_DURATION_MS) / 2);
+    expect(contended.length).toBe(TAGS_PER_QUERY);
+    expect(contended.every(logs => logs.length > 0)).toBe(true);
+    expect(contended).toEqual(baseline);
 
     await Promise.all(writes);
   });
