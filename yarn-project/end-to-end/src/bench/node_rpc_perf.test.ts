@@ -620,14 +620,31 @@ describe('e2e_node_rpc_perf', () => {
       expect(stats.avg).toBeLessThan(3000);
     });
 
-    it('benchmarks getPrivateLogsByTags with 100 tags', async () => {
-      const tags = cycleTags(TAGS_PER_CALL, privateTags, () => SiloedTag.random());
+    it('benchmarks getPrivateLogsByTags with 100 tags (recipient sync shape)', async () => {
+      // The recipient-sync shape measured at the node boundary: ~100 tags per call, includeEffects on, and a
+      // near-total miss rate (0.45% of tags matched anything) — one matching tag among 100 keeps the hit path
+      // covered without over-weighting response serialization.
+      const tags = [
+        privateTags[0] ?? SiloedTag.random(),
+        ...Array.from({ length: TAGS_PER_CALL - 1 }, () => SiloedTag.random()),
+      ];
       const { stats } = await benchmark(
         'getPrivateLogsByTags_100tags',
-        () => aztecNode.getPrivateLogsByTags({ tags, referenceBlock }),
+        () => aztecNode.getPrivateLogsByTags({ tags, referenceBlock, includeEffects: true }),
         BENCHMARK_ITERATIONS_FAST,
       );
       addResult('getPrivateLogsByTags_100tags', stats);
+      expect(stats.avg).toBeLessThan(3000);
+    });
+
+    it('benchmarks getPrivateLogsByTags with 100 matching tags', async () => {
+      const tags = cycleTags(TAGS_PER_CALL, privateTags, () => SiloedTag.random());
+      const { stats } = await benchmark(
+        'getPrivateLogsByTags_100tags_allhits',
+        () => aztecNode.getPrivateLogsByTags({ tags, referenceBlock, includeEffects: true }),
+        BENCHMARK_ITERATIONS_FAST,
+      );
+      addResult('getPrivateLogsByTags_100tags_allhits', stats);
       expect(stats.avg).toBeLessThan(3000);
     });
 
