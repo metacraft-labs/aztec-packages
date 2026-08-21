@@ -17,9 +17,11 @@ template <typename LeafType, typename HashingPolicy> class IndexedMemoryTree {
 
     GetLowIndexedLeafResponse get_low_indexed_leaf(const FF& key) const;
 
-    IndexedLeaf<LeafType> get_leaf_preimage(size_t leaf_index) const;
+    // index_t, not size_t: this is what get_low_indexed_leaf() returns, and it is 64-bit
+    // even where size_t is 32-bit. The single narrowing happens inside.
+    IndexedLeaf<LeafType> get_leaf_preimage(index_t leaf_index) const;
 
-    SiblingPath get_sibling_path(size_t leaf_index) const;
+    SiblingPath get_sibling_path(index_t leaf_index) const;
 
     AppendOnlyTreeSnapshot get_snapshot() const;
 
@@ -118,16 +120,16 @@ GetLowIndexedLeafResponse IndexedMemoryTree<LeafType, HashingPolicy>::get_low_in
 }
 
 template <typename LeafType, typename HashingPolicy>
-IndexedLeaf<LeafType> IndexedMemoryTree<LeafType, HashingPolicy>::get_leaf_preimage(size_t leaf_index) const
+IndexedLeaf<LeafType> IndexedMemoryTree<LeafType, HashingPolicy>::get_leaf_preimage(index_t leaf_index) const
 {
     BB_ASSERT_DEBUG(leaf_index < leaves.size(), "Leaf index out of bounds");
-    return leaves.at(leaf_index);
+    return leaves.at(static_cast<size_t>(leaf_index));
 }
 
 template <typename LeafType, typename HashingPolicy>
-SiblingPath IndexedMemoryTree<LeafType, HashingPolicy>::get_sibling_path(size_t leaf_index) const
+SiblingPath IndexedMemoryTree<LeafType, HashingPolicy>::get_sibling_path(index_t leaf_index) const
 {
-    return tree.get_sibling_path(leaf_index);
+    return tree.get_sibling_path(static_cast<size_t>(leaf_index));
 }
 
 template <typename LeafType, typename HashingPolicy>
@@ -150,10 +152,10 @@ SequentialInsertionResult<LeafType> IndexedMemoryTree<LeafType, HashingPolicy>::
     for (const auto& leaf_to_insert : leaves_to_insert) {
         FF key = leaf_to_insert.get_key();
         GetLowIndexedLeafResponse find_low_leaf_result = get_low_indexed_leaf(key);
-        IndexedLeaf<LeafType>& low_leaf = leaves.at(find_low_leaf_result.index);
+        IndexedLeaf<LeafType>& low_leaf = leaves.at(static_cast<size_t>(find_low_leaf_result.index));
 
         result.low_leaf_witness_data.push_back(LeafUpdateWitnessData<LeafType>(
-            low_leaf, find_low_leaf_result.index, tree.get_sibling_path(find_low_leaf_result.index)));
+            low_leaf, find_low_leaf_result.index, get_sibling_path(find_low_leaf_result.index)));
 
         if (!find_low_leaf_result.is_already_present) {
             // If the leaf is not already present, we point the low leaf to the new leaf and then insert the new leaf.
@@ -163,20 +165,20 @@ SequentialInsertionResult<LeafType> IndexedMemoryTree<LeafType, HashingPolicy>::
             low_leaf.nextIndex = insertion_index;
             low_leaf.nextKey = key;
             FF low_leaf_hash = HashingPolicy::hash(low_leaf.get_hash_inputs());
-            tree.update_element(find_low_leaf_result.index, low_leaf_hash);
+            tree.update_element(static_cast<size_t>(find_low_leaf_result.index), low_leaf_hash);
 
             append_leaf(new_indexed_leaf);
             FF new_leaf_hash = HashingPolicy::hash(new_indexed_leaf.get_hash_inputs());
-            tree.update_element(insertion_index, new_leaf_hash);
+            tree.update_element(static_cast<size_t>(insertion_index), new_leaf_hash);
 
-            result.insertion_witness_data.push_back(LeafUpdateWitnessData<LeafType>(
-                new_indexed_leaf, insertion_index, tree.get_sibling_path(insertion_index)));
+            result.insertion_witness_data.push_back(
+                LeafUpdateWitnessData<LeafType>(new_indexed_leaf, insertion_index, get_sibling_path(insertion_index)));
 
         } else if (LeafType::is_updateable()) {
             // Update the current leaf's value, don't change it's link
             low_leaf = IndexedLeaf<LeafType>(leaf_to_insert, low_leaf.nextIndex, low_leaf.nextKey);
             FF low_leaf_hash = HashingPolicy::hash(low_leaf.get_hash_inputs());
-            tree.update_element(find_low_leaf_result.index, low_leaf_hash);
+            tree.update_element(static_cast<size_t>(find_low_leaf_result.index), low_leaf_hash);
 
             // Push an empty insertion witness
             result.insertion_witness_data.push_back(

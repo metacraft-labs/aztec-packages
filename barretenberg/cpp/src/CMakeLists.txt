@@ -120,14 +120,31 @@ if(NOT BB_LITE)
     add_subdirectory(barretenberg/lmdblib)
 endif()
 
+# The AVM simulator and the world state it runs against. These are single-threaded and
+# storage-free (world_state_reference is the in-memory reference world state), so unlike
+# the server modules below they are not intrinsically native-only. The FUZZING_AVM block
+# further down already builds these three plus world_state -- which it can have because the
+# fuzzing-avm preset sets MULTITHREADING=ON -- without ipc, wsdb, cdb, avm or nodejs_module.
+#
+# NOTE: Do not conditionally base vm2 on the AVM flag; it defines a necessary vm2_sim library.
+set(BB_BUILD_AVM_MODULES OFF)
 if(NOT FUZZING AND NOT WASM AND NOT BB_LITE)
-    # Fuzzing preset cannot be built with world_state as world_state cannot compile with MULTITHREADING=OFF
-    # Mobile builds exclude these modules that require LMDB or aren't needed on mobile
+    set(BB_BUILD_AVM_MODULES ON)
+elseif(WASM AND AVM_WASM AND NOT FUZZING AND NOT BB_LITE)
+    set(BB_BUILD_AVM_MODULES ON)
+endif()
+
+if(BB_BUILD_AVM_MODULES)
     add_subdirectory(barretenberg/aztec)
     add_subdirectory(barretenberg/world_state_reference)
-    add_subdirectory(barretenberg/world_state)
-    # NOTE: Do not conditionally base this on the AVM flag as it defines a necessary vm2_sim library.
     add_subdirectory(barretenberg/vm2)
+endif()
+
+# Server-side modules. world_state cannot compile with MULTITHREADING=OFF, so the fuzzing
+# preset cannot have it; ipc/wsdb/cdb/nodejs_module need sockets, LMDB or node. Mobile
+# builds (BB_LITE) exclude the same set.
+if(NOT FUZZING AND NOT WASM AND NOT BB_LITE)
+    add_subdirectory(barretenberg/world_state)
     add_subdirectory(barretenberg/ipc)
     add_subdirectory(barretenberg/wsdb)
     add_subdirectory(barretenberg/vm2_wsdb)

@@ -426,6 +426,19 @@
       }
     },
     {
+      "name": "wasm-avm",
+      "displayName": "Build for WASM including the AVM simulator",
+      "description": "wasm build with AVM_WASM=ON: adds vm2_sim, and real C++ exceptions (needs wasi-sdk 33)",
+      "inherits": "wasm",
+      "binaryDir": "build-wasm-avm",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "AVM_WASM": "ON",
+        "AVM": "OFF",
+        "CMAKE_CXX_FLAGS": ""
+      }
+    },
+    {
       "name": "wasm-threads",
       "displayName": "Build for pthread enabled WASM",
       "description": "Build for pthread enabled WASM",

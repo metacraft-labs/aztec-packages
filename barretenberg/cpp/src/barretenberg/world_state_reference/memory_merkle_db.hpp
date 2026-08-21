@@ -105,7 +105,7 @@ template <typename LeafType, typename HashingPolicy> class MemoryIndexedTree {
         for (size_t i = 0; i < initial_size; ++i) {
             index_t next_index = i == (initial_size - 1) ? 0 : i + 1;
             leaves_[i].nextIndex = next_index;
-            leaves_[i].nextKey = leaves_[next_index].leaf.get_key();
+            leaves_[i].nextKey = leaves_[as_vector_index(next_index)].leaf.get_key();
             tree_.update_element(i, HashingPolicy::hash(leaves_[i].get_hash_inputs()));
         }
     }
@@ -128,10 +128,15 @@ template <typename LeafType, typename HashingPolicy> class MemoryIndexedTree {
         return GetLowIndexedLeafResponse(false, low_index);
     }
 
+    // leaves_ is addressed by index_t, which is 64-bit even where size_t is 32-bit. Every
+    // call site bounds-checks against leaves_.size() first, so the narrowing is safe; this
+    // makes it explicit in one place rather than relying on an implicit conversion.
+    static size_t as_vector_index(index_t i) { return static_cast<size_t>(i); }
+
     Leaf get_leaf_preimage(index_t leaf_index) const
     {
         BB_ASSERT_LT(leaf_index, leaves_.size(), "Leaf index out of bounds");
-        return leaves_[leaf_index];
+        return leaves_[as_vector_index(leaf_index)];
     }
 
     FF get_leaf_value(index_t leaf_index) const { return tree_.get_node(0, leaf_index); }
@@ -149,7 +154,7 @@ template <typename LeafType, typename HashingPolicy> class MemoryIndexedTree {
 
         FF key = leaf_to_insert.get_key();
         GetLowIndexedLeafResponse find_low_leaf_result = get_low_indexed_leaf(key);
-        Leaf& low_leaf = leaves_[find_low_leaf_result.index];
+        Leaf& low_leaf = leaves_[as_vector_index(find_low_leaf_result.index)];
 
         result.low_leaf_witness_data.emplace_back(
             low_leaf, find_low_leaf_result.index, tree_.get_sibling_path(find_low_leaf_result.index));
