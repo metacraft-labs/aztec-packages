@@ -4,7 +4,7 @@
 // external_2:  { status: not started, auditors: [], commit: }
 // =====================
 
-#include "barretenberg/crypto/merkle_tree/lmdb_store/lmdb_tree_store.hpp"
+#include "barretenberg/crypto/merkle_tree_lmdb/lmdb_store/lmdb_tree_store.hpp"
 #include "barretenberg/common/serialize.hpp"
 #include "barretenberg/crypto/merkle_tree/indexed_tree/indexed_leaf.hpp"
 #include "barretenberg/crypto/merkle_tree/types.hpp"

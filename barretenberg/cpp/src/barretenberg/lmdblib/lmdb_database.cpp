@@ -59,7 +59,7 @@ DBStats LMDBDatabase::get_stats(LMDBReadTransaction& tx)
 {
     MDB_stat stat;
     call_lmdb_func(mdb_stat, tx.underlying(), underlying(), &stat);
-    return DBStats(name(), stat);
+    return make_db_stats(name(), stat);
 }
 
 } // namespace bb::lmdblib

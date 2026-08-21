@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "barretenberg/common/thread_pool.hpp"
-#include "barretenberg/crypto/merkle_tree/lmdb_store/lmdb_tree_store.hpp"
 #include "barretenberg/ecc/curves/bn254/fr.hpp"
 #include "barretenberg/numeric/random/engine.hpp"
 
@@ -25,7 +24,11 @@ static auto create_values = [](uint32_t num_values = NUM_VALUES) {
     return values;
 };
 
-const fr& get_value(size_t index);
+inline const fr& get_value(size_t index)
+{
+    static std::vector<fr> VALUES = create_values();
+    return VALUES[index];
+}
 
 inline std::string random_string()
 {
@@ -60,15 +63,6 @@ using ThreadPoolPtr = std::shared_ptr<ThreadPool>;
 inline ThreadPoolPtr make_thread_pool(uint64_t numThreads)
 {
     return std::make_shared<ThreadPool>(numThreads);
-}
-
-void inline print_store_data(LMDBTreeStore::SharedPtr db, std::ostream& os)
-{
-    LMDBTreeStore::ReadTransaction::Ptr tx = db->create_read_transaction();
-    TreeDBStats stats;
-    db->get_stats(stats, *tx);
-
-    os << stats;
 }
 
 } // namespace bb::crypto::merkle_tree
