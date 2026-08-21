@@ -122,10 +122,13 @@ RUN wget https://apt.llvm.org/llvm.sh && \
 # Install wasi-sdk.
 RUN arch=$(uname -m) && \
     if [ "$arch" = "aarch64" ]; then arch="arm64"; fi && \
-    wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-27/wasi-sdk-27.0-${arch}-linux.tar.gz && \
-    tar xvf wasi-sdk-27.0-${arch}-linux.tar.gz && \
-    mv wasi-sdk-27.0-${arch}-linux /opt/wasi-sdk && \
-    rm wasi-sdk-27.0-${arch}-linux.tar.gz
+    wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-${arch}-linux.tar.gz && \
+    tar xvf wasi-sdk-33.0-${arch}-linux.tar.gz && \
+    mv wasi-sdk-33.0-${arch}-linux /opt/wasi-sdk && \
+    rm wasi-sdk-33.0-${arch}-linux.tar.gz
+# The `wasm` CMake preset reads this. Set here so the preset keeps working with no
+# arguments, while still being overridable for a toolchain installed elsewhere.
+ENV WASI_SDK_PREFIX=/opt/wasi-sdk
 
 # Install foundry.
 COPY --from=foundry /opt/foundry /opt/foundry

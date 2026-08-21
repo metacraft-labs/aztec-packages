@@ -15,7 +15,9 @@ export expected_min_cmake_version=3.24
 export expected_min_node_version=24.12.0
 export expected_min_zig_version=0.15.1
 export expected_abs_rust_version=1.89.0
-export expected_abs_wasi_version=27.0
+export expected_abs_wasi_version=33.0
+# Read by the `wasm` CMake preset. Overridable for a toolchain installed elsewhere.
+export WASI_SDK_PREFIX=${WASI_SDK_PREFIX:-/opt/wasi-sdk}
 export expected_abs_foundry_version=1.4.1
 export expected_abs_yarn_version=4.13.0
 

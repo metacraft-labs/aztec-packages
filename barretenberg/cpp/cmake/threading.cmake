@@ -3,8 +3,11 @@ if(MULTITHREADING)
     add_compile_options(-pthread)
     add_link_options(-pthread)
     if(WASM)
-        add_compile_options(--target=wasm32-wasi-threads)
-        add_link_options(--target=wasm32-wasi-threads -Wl,--shared-memory)
+        # wasm32-wasip1-threads, not wasm32-wasi-threads: clang has deprecated the
+        # latter spelling, and with -Werror the deprecation warning is fatal. Both
+        # triples resolve to the same sysroot directory.
+        add_compile_options(--target=wasm32-wasip1-threads)
+        add_link_options(--target=wasm32-wasip1-threads -Wl,--shared-memory)
         # Prevent indirect call type mismatch errors in thread_local destructors
         # (without this the benchmark flow fails at destruction point for WASM)
         add_compile_options(-fno-c++-static-destructors)
