@@ -39,3 +39,10 @@ __pycache__
 
 # Local opt-in: install nargo from the matching official noir release instead of building from source.
 noir-from-release.flag
+
+# Downstream (metacraft-labs fork): nix / direnv working state. flake.nix,
+# flake.lock, nix/ and .envrc are tracked; what direnv and nix-build leave
+# behind is not.
+.direnv/
+/result
+/result-*
