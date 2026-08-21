@@ -141,14 +141,16 @@ chmod +x /etc/profile.d/rust.sh
 # =============================================================================
 # SECTION 5: wasi-sdk
 # =============================================================================
-log_info "Installing wasi-sdk 27..."
+log_info "Installing wasi-sdk 33..."
 
 arch=$(uname -m)
 if [ "$arch" = "aarch64" ]; then arch="arm64"; fi
-wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-27/wasi-sdk-27.0-${arch}-linux.tar.gz
-tar xvf wasi-sdk-27.0-${arch}-linux.tar.gz
-mv wasi-sdk-27.0-${arch}-linux /opt/wasi-sdk
-rm wasi-sdk-27.0-${arch}-linux.tar.gz
+wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-${arch}-linux.tar.gz
+tar xvf wasi-sdk-33.0-${arch}-linux.tar.gz
+mv wasi-sdk-33.0-${arch}-linux /opt/wasi-sdk
+rm wasi-sdk-33.0-${arch}-linux.tar.gz
+# Read by the `wasm` CMake preset.
+echo 'export WASI_SDK_PREFIX=${WASI_SDK_PREFIX:-/opt/wasi-sdk}' >> /etc/profile.d/wasi-sdk.sh
 
 # =============================================================================
 # SECTION 6: Foundry
