@@ -405,7 +405,7 @@
       "generator": "Ninja",
       "toolchainFile": "cmake/toolchains/wasm32-wasi.cmake",
       "environment": {
-        "WASI_SDK_PREFIX": "/opt/wasi-sdk",
+        "WASI_SDK_PREFIX": "$penv{WASI_SDK_PREFIX}",
         "CC": "$env{WASI_SDK_PREFIX}/bin/clang",
         "CXX": "$env{WASI_SDK_PREFIX}/bin/clang++",
         "CXXFLAGS": "-DBB_VERBOSE -fvisibility=hidden",
