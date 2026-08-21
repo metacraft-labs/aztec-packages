@@ -452,6 +452,7 @@ struct PublicSimulatorConfig {
     bool collect_public_inputs = false;
     bool collect_debug_logs = false;
     bool collect_statistics = false;
+    bool collect_execution_steps = false;
     CollectionLimitsConfig collection_limits;
 
     bool operator==(const PublicSimulatorConfig& other) const = default;
@@ -463,6 +464,7 @@ struct PublicSimulatorConfig {
                               collect_public_inputs,
                               collect_debug_logs,
                               collect_statistics,
+                              collect_execution_steps,
                               collection_limits);
 };
 
@@ -536,6 +538,19 @@ struct CallStackMetadata {
                               num_nested_calls);
 };
 
+// One executed AVM instruction, as observed by ExecutionObserverInterface. Only collected
+// when PublicSimulatorConfig::collect_execution_steps is set.
+struct ExecutionStep {
+    uint32_t context_id; // Which call frame.
+    FF contract_address; // Which contract that frame is running.
+    PC pc;               // Where in its bytecode.
+    uint8_t opcode;      // The WireOpCode that ran.
+    Gas gas_used;        // Cumulative gas used by the frame after the instruction.
+
+    bool operator==(const ExecutionStep& other) const = default;
+    MSGPACK_CAMEL_CASE_FIELDS(context_id, contract_address, pc, opcode, gas_used);
+};
+
 struct PublicTxEffect {
     FF transaction_fee;
     std::vector<FF> note_hashes;
@@ -557,6 +572,8 @@ struct TxSimulationResult {
     // The following fields are only guaranteed to be present if the simulator is configured to collect them.
     std::vector<CallStackMetadata> call_stack_metadata; // One per enqueued call. All phases.
     std::optional<std::vector<DebugLog>> logs;
+    // One entry per executed instruction, in execution order, across all call frames.
+    std::optional<std::vector<ExecutionStep>> execution_steps;
     // Proving request data.
     std::optional<PublicInputs> public_inputs;
     std::optional<ExecutionHints> hints;
@@ -567,8 +584,15 @@ struct TxSimulationResult {
 
     bool operator==(const TxSimulationResult& other) const = default;
 
-    MSGPACK_CAMEL_CASE_FIELDS(
-        gas_used, revert_code, public_tx_effect, call_stack_metadata, logs, public_inputs, hints, stats);
+    MSGPACK_CAMEL_CASE_FIELDS(gas_used,
+                              revert_code,
+                              public_tx_effect,
+                              call_stack_metadata,
+                              logs,
+                              execution_steps,
+                              public_inputs,
+                              hints,
+                              stats);
 };
 
 } // namespace bb::avm2
