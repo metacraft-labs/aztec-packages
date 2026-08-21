@@ -121,6 +121,8 @@ void LMDBStoreWrapper::verify_store() const
     throw std::runtime_error(format("LMDB store unavailable, was close already called?"));
 }
 
+// Returned by value: the copied shared_ptrs keep the transaction and its mutex alive even if the entry is erased by
+// a concurrent CLOSE_READ_TX.
 ReadTxData LMDBStoreWrapper::get_read_tx(uint64_t id)
 {
     std::lock_guard<std::mutex> lock(_read_tx_mutex);
