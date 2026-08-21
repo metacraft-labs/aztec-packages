@@ -40,6 +40,34 @@ describe('ReadTransaction', () => {
     expect(await resp).toEqual(Buffer.from('foo'));
   });
 
+  it('sends a single GET request for many keys', async () => {
+    const getDeferred = promiseWithResolvers<LMDBResponseBody[LMDBMessageType.GET]>();
+
+    channel.sendMessage.mockReturnValue(getDeferred.promise);
+
+    const keys = [Buffer.from('key1'), Buffer.from('key2'), Buffer.from('key3')];
+    const resp = tx.getMany(keys);
+
+    expect(channel.sendMessage).toHaveBeenCalledTimes(1);
+    expect(channel.sendMessage).toHaveBeenCalledWith(LMDBMessageType.GET, { db: Database.DATA, keys });
+
+    getDeferred.resolve({
+      values: [[Buffer.from('foo')], null, [Buffer.from('bar')]],
+    });
+
+    expect(await resp).toEqual([Buffer.from('foo'), undefined, Buffer.from('bar')]);
+  });
+
+  it('skips the GET request when asked for no keys', async () => {
+    expect(await tx.getMany([])).toEqual([]);
+    expect(channel.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('refuses batched reads once closed', async () => {
+    tx.close();
+    await expect(tx.getMany([Buffer.from('foo')])).rejects.toThrow('Transaction is closed');
+  });
+
   it('iterates the database', async () => {
     channel.sendMessage
       .mockResolvedValueOnce({

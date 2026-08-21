@@ -31,6 +31,10 @@ export class SQLiteOPFSAztecMap<K extends Key, V extends Value> implements Aztec
     return raw == null ? undefined : this.decodeValue(raw);
   }
 
+  getManyAsync(keys: K[]): Promise<(V | undefined)[]> {
+    return Promise.all(keys.map(key => this.getAsync(key)));
+  }
+
   async hasAsync(key: K): Promise<boolean> {
     const rows = await this.store.allAsync('SELECT 1 FROM data WHERE slot = ? LIMIT 1', [this.slot(key)]);
     return rows.length > 0;

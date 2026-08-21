@@ -39,6 +39,10 @@ export class LmdbAztecMap<K extends Key, V extends Value> implements AztecMap<K,
     return Promise.resolve(this.get(key));
   }
 
+  getManyAsync(keys: K[]): Promise<(V | undefined)[]> {
+    return Promise.all(keys.map(key => this.getAsync(key)));
+  }
+
   has(key: K): boolean {
     return this.db.doesExist(this.slot(key));
   }

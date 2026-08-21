@@ -24,6 +24,15 @@ export class ReadTransaction {
     return response.values[0]?.[0] ?? undefined;
   }
 
+  public async getMany(keys: Uint8Array[]): Promise<(Uint8Array | undefined)[]> {
+    this.assertIsOpen();
+    if (keys.length === 0) {
+      return [];
+    }
+    const response = await this.channel.sendMessage(LMDBMessageType.GET, { keys, db: Database.DATA });
+    return keys.map((_, i) => response.values[i]?.[0] ?? undefined);
+  }
+
   public async getIndex(key: Uint8Array): Promise<Uint8Array[]> {
     this.assertIsOpen();
     const response = await this.channel.sendMessage(LMDBMessageType.GET, { keys: [key], db: Database.INDEX });

@@ -70,6 +70,13 @@ export class LMDBMap<K extends Key, V extends Value> implements AztecAsyncMap<K,
     });
   }
 
+  getManyAsync(keys: K[]): Promise<(V | undefined)[]> {
+    return execInReadTx(this.store, async tx => {
+      const vals = await tx.getMany(keys.map(key => serializeKey(this.prefix, key)));
+      return vals.map(val => (val ? this.encoder.unpack(val) : undefined));
+    });
+  }
+
   hasAsync(key: K): Promise<boolean> {
     return execInReadTx(this.store, async tx => !!(await tx.get(serializeKey(this.prefix, key))));
   }

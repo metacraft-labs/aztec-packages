@@ -34,6 +34,10 @@ export class IndexedDBAztecMap<K extends Key, V extends Value> implements AztecA
     return data ? this.restoreBuffers(data.value as V) : undefined;
   }
 
+  getManyAsync(keys: K[]): Promise<(V | undefined)[]> {
+    return Promise.all(keys.map(key => this.getAsync(key)));
+  }
+
   async hasAsync(key: K): Promise<boolean> {
     const result = (await this.getAsync(key)) !== undefined;
     return result;
