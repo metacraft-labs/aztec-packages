@@ -8,6 +8,7 @@
 #include "barretenberg/vm2/simulation/interfaces/bytecode_manager.hpp"
 #include "barretenberg/vm2/simulation/interfaces/context.hpp"
 #include "barretenberg/vm2/simulation/interfaces/execution_components.hpp"
+#include "barretenberg/vm2/simulation/interfaces/execution_observer.hpp"
 #include "barretenberg/vm2/simulation/interfaces/gas_tracker.hpp"
 #include "barretenberg/vm2/simulation/lib/call_stack_metadata_collector.hpp"
 
@@ -35,8 +36,15 @@ EnqueuedCallResult HybridExecution::execute(std::unique_ptr<ContextInterface> en
         // we'll always use this in the loop.
         auto& context = *external_call_stack.top();
 
+        // Hoisted out of the try block so the observer still fires when an instruction ends
+        // in an exceptional halt. Both are trivially destructible, so hoisting them costs
+        // the loop nothing: no cleanup has to be emitted on the exception paths.
+        PC observed_pc = 0;
+        WireOpCode observed_opcode = WireOpCode::LAST_OPCODE_SENTINEL;
+
         try {
             auto pc = context.get_pc();
+            observed_pc = pc;
 
             //// Temporality group 1 starts ////
 
@@ -49,6 +57,7 @@ EnqueuedCallResult HybridExecution::execute(std::unique_ptr<ContextInterface> en
 
             // We try to fetch an instruction.
             Instruction instruction = context.get_bytecode_manager().read_instruction(pc);
+            observed_opcode = instruction.opcode;
 
             debug("@", pc, " ", instruction.to_string());
             context.set_next_pc(pc + static_cast<PC>(instruction.size_in_bytes()));
@@ -89,6 +98,13 @@ EnqueuedCallResult HybridExecution::execute(std::unique_ptr<ContextInterface> en
             // All exceptions should fall in the above catch blocks.
             important("An unhandled exception occurred: ", e.what());
             throw;
+        }
+
+        // Per-instruction observation. One predictable null check per instruction when no
+        // observer is installed, which is the default.
+        if (execution_observer_ != nullptr) [[unlikely]] {
+            execution_observer_->on_instruction(
+                context.get_context_id(), context.get_address(), observed_pc, observed_opcode, context.get_gas_used());
         }
 
         // We always do what follows. "Finally".

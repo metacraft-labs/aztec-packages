@@ -30,6 +30,7 @@ namespace bb::avm2::simulation {
 // Forward declarations for interface types that are only used as references in this header.
 // Their full definitions are included in execution.cpp.
 class CallStackMetadataCollectorInterface;
+class ExecutionObserverInterface;
 class AluInterface;
 class BitwiseInterface;
 class DataCopyInterface;
@@ -69,7 +70,8 @@ class Execution : public ExecutionInterface {
               DebugLoggerInterface& debug_log_component,
               HighLevelMerkleDBInterface& merkle_db,
               CallStackMetadataCollectorInterface& call_stack_metadata_collector,
-              CancellationTokenPtr cancellation_token = nullptr)
+              CancellationTokenPtr cancellation_token = nullptr,
+              ExecutionObserverInterface* execution_observer = nullptr)
         : execution_components(execution_components)
         , instruction_info_db(instruction_info_db)
         , alu(alu)
@@ -91,6 +93,7 @@ class Execution : public ExecutionInterface {
         , ctx_stack_events(ctx_stack_emitter)
         , call_stack_metadata_collector(call_stack_metadata_collector)
         , cancellation_token_(std::move(cancellation_token))
+        , execution_observer_(execution_observer)
     {}
 
     EnqueuedCallResult execute(std::unique_ptr<ContextInterface> enqueued_call_context) override;
@@ -260,6 +263,10 @@ class Execution : public ExecutionInterface {
     // Optional cancellation token for stopping simulation on timeout.
     // When nullptr, cancellation checks are skipped (no overhead for non-NAPI paths).
     CancellationTokenPtr cancellation_token_;
+
+    // Per-instruction observer. Null unless PublicSimulatorConfig::collect_execution_steps
+    // is set; see simulation/interfaces/execution_observer.hpp.
+    ExecutionObserverInterface* execution_observer_ = nullptr;
 };
 
 } // namespace bb::avm2::simulation

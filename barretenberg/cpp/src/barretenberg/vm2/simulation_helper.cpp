@@ -15,6 +15,7 @@
 #include "barretenberg/vm2/simulation/lib/call_stack_metadata_collector.hpp"
 #include "barretenberg/vm2/simulation/lib/db_types.hpp"
 #include "barretenberg/vm2/simulation/lib/execution_id_manager.hpp"
+#include "barretenberg/vm2/simulation/lib/execution_observer.hpp"
 #include "barretenberg/vm2/simulation/lib/hinting_dbs.hpp"
 #include "barretenberg/vm2/simulation/lib/instruction_info.hpp"
 #include "barretenberg/vm2/simulation/lib/public_inputs_builder.hpp"
@@ -495,6 +496,11 @@ TxSimulationResult AvmSimulationHelper::simulate_fast_internal(ContractDBInterfa
                                      : static_cast<std::unique_ptr<CallStackMetadataCollectorInterface>>(
                                            std::make_unique<NoopCallStackMetadataCollector>());
 
+    // Per-instruction observation. Left null (and therefore free) unless asked for, in the
+    // same shape as call_stack_metadata_collector above.
+    std::unique_ptr<ExecutionStepCollector> execution_step_collector =
+        config.collect_execution_steps ? std::make_unique<ExecutionStepCollector>() : nullptr;
+
     HybridExecution execution(alu,
                               bitwise,
                               data_copy,
@@ -515,7 +521,8 @@ TxSimulationResult AvmSimulationHelper::simulate_fast_internal(ContractDBInterfa
                               *debug_log_component,
                               merkle_db,
                               *call_stack_metadata_collector,
-                              std::move(cancellation_token));
+                              std::move(cancellation_token),
+                              execution_step_collector.get());
     TxExecution tx_execution(execution,
                              context_provider,
                              contract_db,
@@ -550,6 +557,9 @@ TxSimulationResult AvmSimulationHelper::simulate_fast_internal(ContractDBInterfa
         .public_tx_effect = extract_public_tx_effect(tx_execution_result, side_effect_tracker),
         .call_stack_metadata = call_stack_metadata_collector->dump_call_stack_metadata(),
         .logs = debug_log_component->dump_logs(),
+        .execution_steps = execution_step_collector
+                               ? std::make_optional(execution_step_collector->dump_execution_steps())
+                               : std::nullopt,
         // Proving request data.
         .public_inputs =
             config.collect_public_inputs ? std::make_optional(public_inputs_builder.build()) : std::nullopt,
