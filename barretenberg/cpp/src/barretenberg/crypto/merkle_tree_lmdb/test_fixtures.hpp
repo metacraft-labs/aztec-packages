@@ -1,7 +1,9 @@
 #pragma once
 
+#include <ostream>
+
 #include "barretenberg/crypto/merkle_tree/indexed_tree/indexed_leaf.hpp"
-#include "barretenberg/crypto/merkle_tree/lmdb_store/lmdb_tree_store.hpp"
+#include "barretenberg/crypto/merkle_tree_lmdb/lmdb_store/lmdb_tree_store.hpp"
 #include "barretenberg/crypto/merkle_tree/response.hpp"
 #include "barretenberg/crypto/merkle_tree/signal.hpp"
 #include "barretenberg/ecc/curves/bn254/fr.hpp"
@@ -308,4 +310,16 @@ template <typename TreeType> void revert_tree_to_depth(TreeType& tree, uint32_t 
     auto completion = [&](auto completion) { tree.revert_to_depth(depth, completion); };
     call_operation(completion, expected_success);
 }
+
+// Debug helper: dump a tree store's database statistics. Lives here rather than in
+// crypto/merkle_tree/fixtures.hpp because it is the one fixture that needs an LMDB store.
+void inline print_store_data(LMDBTreeStore::SharedPtr db, std::ostream& os)
+{
+    LMDBTreeStore::ReadTransaction::Ptr tx = db->create_read_transaction();
+    TreeDBStats stats;
+    db->get_stats(stats, *tx);
+
+    os << stats;
+}
+
 } // namespace bb::crypto::merkle_tree

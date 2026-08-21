@@ -1,6 +1,6 @@
 #pragma once
 
-#include "barretenberg/crypto/merkle_tree/lmdb_store/lmdb_tree_store.hpp"
+#include "barretenberg/crypto/merkle_tree_lmdb/lmdb_store/lmdb_tree_store.hpp"
 #include <memory>
 #include <utility>
 

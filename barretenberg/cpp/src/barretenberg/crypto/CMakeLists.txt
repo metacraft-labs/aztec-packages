@@ -13,5 +13,8 @@ add_subdirectory(aes128)
 add_subdirectory(poseidon2)
 
 if (NOT WASM)
+    # NOTE: crypto_merkle_tree itself no longer depends on LMDB and could be built for wasm.
+    # Enabling that is a separate change; this one only splits the module.
     add_subdirectory(merkle_tree)
+    add_subdirectory(merkle_tree_lmdb)
 endif()

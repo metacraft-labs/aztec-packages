@@ -7,13 +7,15 @@
 #pragma once
 
 #include "barretenberg/ecc/curves/bn254/fr.hpp"
-#include "barretenberg/lmdblib/types.hpp"
-#include "lmdb.h"
+// DBStats only. Deliberately NOT lmdblib/types.hpp, which pulls in <lmdb.h>: TreeDBStats
+// embeds DBStats to *report* database statistics, and the merkle tree code neither calls
+// nor links LMDB.
+#include "barretenberg/lmdblib/db_stats.hpp"
 #include <cstdint>
 #include <optional>
 namespace bb::crypto::merkle_tree {
 
-using namespace bb::lmdblib;
+using bb::lmdblib::DBStats;
 
 using index_t = uint64_t;
 using block_number_t = uint32_t;

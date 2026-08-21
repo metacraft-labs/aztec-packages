@@ -1,10 +1,10 @@
 #include "barretenberg/common/thread_pool.hpp"
 #include "barretenberg/crypto/merkle_tree/fixtures.hpp"
 #include "barretenberg/crypto/merkle_tree/hash.hpp"
-#include "barretenberg/crypto/merkle_tree/indexed_tree/content_addressed_indexed_tree.hpp"
+#include "barretenberg/crypto/merkle_tree_lmdb/indexed_tree/content_addressed_indexed_tree.hpp"
 #include "barretenberg/crypto/merkle_tree/indexed_tree/indexed_leaf.hpp"
-#include "barretenberg/crypto/merkle_tree/lmdb_store/lmdb_tree_store.hpp"
-#include "barretenberg/crypto/merkle_tree/node_store/cached_content_addressed_tree_store.hpp"
+#include "barretenberg/crypto/merkle_tree_lmdb/lmdb_store/lmdb_tree_store.hpp"
+#include "barretenberg/crypto/merkle_tree_lmdb/node_store/cached_content_addressed_tree_store.hpp"
 #include "barretenberg/crypto/merkle_tree/response.hpp"
 #include "barretenberg/numeric/random/engine.hpp"
 #include <benchmark/benchmark.h>
