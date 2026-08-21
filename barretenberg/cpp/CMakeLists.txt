@@ -29,6 +29,9 @@ endif()
 # _WIN32    : Compiler-defined for Windows. Guards POSIX APIs (mmap, signals, IPC).
 # BB_LITE   : CMake option. Excludes server-side subsystems (lmdb, world_state, ipc, nodejs_module).
 #             Enabled for: iOS, Android, Windows cross-compiles.
+# AVM_WASM  : CMake option, default OFF. Adds the AVM simulator to a wasm build.
+#             Additive only: it never removes a module from any configuration, and it
+#             has no effect unless WASM is also set.
 # WASM      : CMake variable mirroring __wasm__ for CMake-level logic.
 
 # Add doxygen build command
@@ -61,6 +64,7 @@ option(SYNTAX_ONLY "only check syntax (-fsyntax-only)" OFF)
 option(ENABLE_WASM_BENCH "Enable BB_BENCH benchmarking support in WASM builds (dev only, not for releases)" OFF)
 option(AVM "enable building of vm2 module and bb-avm" ON)
 option(BB_LITE "Exclude server-side subsystems: lmdb, world_state, ipc, nodejs_module" OFF)
+option(AVM_WASM "Build the AVM simulator (vm2_sim) for wasm. Additive; implies real C++ exceptions." OFF)
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     message(STATUS "Compiling for ARM.")
