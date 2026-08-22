@@ -36,6 +36,12 @@
         {
           packages.wasi-sdk = wasi-sdk;
 
+          # The version barretenberg currently pins. Not in any dev shell and not
+          # used by any build here — it is the negative control the M4 checks
+          # execute against (it cannot link C++ exceptions) and the toolchain the
+          # "before" half of the barretenberg.wasm comparison is built with.
+          packages.wasi-sdk-27 = pkgs.callPackage ./nix/wasi-sdk.nix { version = "27.0"; };
+
           devShells.default = pkgs.mkShell {
             packages = [
               # barretenberg C++ — both the native build (which backs the
@@ -69,7 +75,13 @@
               pkgs.gnumake
               pkgs.gnused
               pkgs.gawk
-            ];
+            ]
+            # The M4 checks build barretenberg.wasm with wasi-sdk 27 as well as 33,
+            # and the UNPATCHED `wasm` preset hardcodes `/opt/wasi-sdk` in its
+            # environment block — that is one of the things the patch fixes. bwrap
+            # binds the chosen SDK there so both halves of the comparison run the
+            # preset verbatim, with the toolchain bytes as the only difference.
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.bubblewrap ];
 
             WASI_SDK_PATH = "${wasi-sdk}";
             WASI_SDK_PREFIX = "${wasi-sdk}";
