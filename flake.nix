@@ -93,7 +93,48 @@
             CMAKE_POLICY_VERSION_MINIMUM = "3.5";
 
             shellHook = ''
-              echo "aztec-packages (metacraft-labs): node $(node --version), wasi-sdk $(head -1 ${wasi-sdk}/VERSION), $(cmake --version | head -1)"
+              # ---- compiler cache -------------------------------------------------
+              # ccache was in the package list from the start and NOTHING invoked it:
+              # barretenberg's CMake has no ccache integration of its own (no
+              # COMPILER_LAUNCHER, no cmake/ccache.cmake), and only one verification lib
+              # passed the launcher on the command line. A cache on PATH but not on the
+              # compiler launcher path looks solved and caches nothing, which is worse
+              # than not having one. These six exports are what put it on that path.
+              #
+              # CMAKE_<LANG>_COMPILER_LAUNCHER is read by CMake as the default for the
+              # cache variable of the same name, so it reaches every configure site —
+              # `cmake --preset wasm` included — without editing a single build script,
+              # and it applies to the wasi-sdk toolchain exactly as it does to the
+              # native one. It does NOT appear in compile_commands.json (CMake keeps the
+              # launcher out of the compile database), so the checks that read the
+              # compile database see the same bare compiler command as before.
+              #
+              # CCACHE_BASEDIR rewrites absolute paths under it to paths relative to the
+              # compile's working directory BEFORE hashing, which is what lets the same
+              # upstream translation unit built in ~/.cache/aztec-m9-observer and in
+              # ~/.cache/aztec-m13-final share one cache entry. It cannot make two
+              # different trees look alike: the hash is over the source CONTENT, so a
+              # tree that differs misses and gets its own object.
+              #
+              # CCACHE_COMPILERCHECK is deliberately NOT the `mtime` default. Every
+              # binary in /nix/store has mtime 1970, so `mtime` discriminates two
+              # toolchains by SIZE alone -- and M4's whole point is that a wasi-sdk
+              # masquerading as another version is exactly the mutation a check reading
+              # the cheap identifier misses. `%compiler% --version` measured at 10.8 ms
+              # per cache hit against 2.3 ms for `mtime` (200 hits, three interleaved
+              # rounds): about 8.5 s over a thousand-translation-unit build.
+              #
+              # sloppiness is left EMPTY on purpose. Every relaxation there is a licence
+              # to return an object for a compile that was not quite the same one, and
+              # this tree's neutrality evidence is built on base-versus-patched builds.
+              export CCACHE_DIR="''${CCACHE_DIR:-$HOME/.cache/ccache}"
+              export CCACHE_BASEDIR="''${CCACHE_BASEDIR:-$HOME}"
+              export CCACHE_MAXSIZE="''${CCACHE_MAXSIZE:-60G}"
+              export CCACHE_COMPILERCHECK="''${CCACHE_COMPILERCHECK:-%compiler% --version}"
+              export CMAKE_C_COMPILER_LAUNCHER="''${CMAKE_C_COMPILER_LAUNCHER:-ccache}"
+              export CMAKE_CXX_COMPILER_LAUNCHER="''${CMAKE_CXX_COMPILER_LAUNCHER:-ccache}"
+
+              echo "aztec-packages (metacraft-labs): node $(node --version), wasi-sdk $(head -1 ${wasi-sdk}/VERSION), $(cmake --version | head -1), ccache $(ccache --version | head -1 | awk '{print $3}') at $CCACHE_DIR"
             '';
           };
         };
