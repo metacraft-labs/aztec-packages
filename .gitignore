@@ -46,3 +46,6 @@ noir-from-release.flag
 .direnv/
 /result
 /result-*
+
+# Repro development environment cache
+.repro/
