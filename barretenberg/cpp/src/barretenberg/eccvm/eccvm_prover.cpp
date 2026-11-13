@@ -283,7 +283,7 @@ std::pair<ECCVMProver::OpeningClaim, ECCVMProver::VerifierOpeningClaim> ECCVMPro
     using ShplonkProver = ShplonkProver_<Flavor::Curve>;
     using ShplonkVerifier = ShplonkVerifier_<Flavor::Curve>;
 
-    const auto shplonk_output = ShplonkProver::compute_partially_evaluated_quotient(
+    auto shplonk_output = ShplonkProver::compute_partially_evaluated_quotient(
         key->commitment_key, univariate_claims.prover_claims, transcript);
     const auto verifier_opening = ShplonkVerifier::compute_partially_evaluated_quotient_claim(
         key->commitment_key.get_monomial_points()[0],
@@ -293,7 +293,7 @@ std::pair<ECCVMProver::OpeningClaim, ECCVMProver::VerifierOpeningClaim> ECCVMPro
         shplonk_output.opening_claim.opening_pair.challenge);
     BB_ASSERT(verifier_opening.opening_pair == shplonk_output.opening_claim.opening_pair);
 
-    return { shplonk_output.opening_claim, verifier_opening };
+    return { std::move(shplonk_output.opening_claim), verifier_opening };
 }
 
 typename ECCVMProver::Proof ECCVMProver::export_proof()
@@ -342,8 +342,9 @@ typename ECCVMProver::Proof ECCVMProver::construct_proof()
  * is used by the \ref TranslatorVerifier to bind the ECCOpQueues over BN254 and Grumpkin. Namely, we
  * check that the field element \f$ A = \text{accumulated_result} \f$ accumulated from the Ultra ECCOpQueue by
  * TranslatorProver satisfies
- * \f{align}{ x\cdot A = \sum_{i=0}^4 T_i(x) \cdot v^i, \f}
- * where \f$ x \f$ is an artifact of our implementation of shiftable polynomials.
+ * \f{align}{ x^{1 + \mathrm{TRACE\_OFFSET}} A = \sum_{i=0}^4 (T_i(x) - m_i(x)) v^i, \f}
+ * where \f$ m_i \f$ contains the masking coefficients and the power of \f$ x \f$ accounts for both
+ * the shiftable-polynomial offset and the disabled trace head.
  *
  * The translation polynomials \f$ T_i \f$ contain random masking values in their first TRACE_OFFSET coefficients.
  * Commitments to the masked \f$ T_i \f$ are safe to reveal, but the evaluations \f$ T_i(x) \f$ include the masking

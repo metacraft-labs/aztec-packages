@@ -7,11 +7,6 @@ import {Hash} from "@aztec/core/libraries/crypto/Hash.sol";
 import {Slot, Timestamp} from "@aztec/core/libraries/TimeLib.sol";
 import {SafeCast} from "@oz/utils/math/SafeCast.sol";
 
-struct AppendOnlyTreeSnapshot {
-  bytes32 root;
-  uint32 nextAvailableLeafIndex;
-}
-
 struct GasFees {
   uint128 feePerDaGas;
   uint128 feePerL2Gas;
@@ -50,6 +45,26 @@ library ProposedHeaderLib {
    * @return The hash of the header
    */
   function hash(ProposedHeader memory _header) internal pure returns (bytes32) {
+    return Hash.sha256ToField(
+      abi.encodePacked(
+        _header.lastArchiveRoot,
+        _header.blockHeadersHash,
+        _header.blobsHash,
+        _header.inboxRollingHash,
+        _header.outHash,
+        _header.slotNumber,
+        Timestamp.unwrap(_header.timestamp).toUint64(),
+        _header.coinbase,
+        _header.feeRecipient,
+        _header.gasFees.feePerDaGas,
+        _header.gasFees.feePerL2Gas,
+        _header.totalManaUsed,
+        _header.accumulatedFees
+      )
+    );
+  }
+
+  function hashCalldata(ProposedHeader calldata _header) internal pure returns (bytes32) {
     return Hash.sha256ToField(
       abi.encodePacked(
         _header.lastArchiveRoot,

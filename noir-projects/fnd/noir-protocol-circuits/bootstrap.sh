@@ -14,6 +14,8 @@ export BB=${BB:-$(../../../barretenberg/cpp/scripts/find-bb)}
 export NARGO=${NARGO:-../../../noir/noir-repo/target/release/nargo}
 export BB_HASH=$(../../../barretenberg/cpp/bootstrap.sh hash)
 export NOIR_HASH=${NOIR_HASH:-$(../../../noir/bootstrap.sh hash)}
+# This script picks the nargo and bb invocations, so it is an input to every artifact it caches.
+export script_hash=$(cache_content_hash "^noir-projects/fnd/noir-protocol-circuits/bootstrap.sh")
 
 export key_dir=./target/keys
 mkdir -p $key_dir
@@ -38,8 +40,27 @@ export ivc_kernel_regex=$(IFS="|"; echo "${ivc_kernel_patterns[*]}")
 export ivc_app_regex=$(IFS="|"; echo "${ivc_app_patterns[*]}")
 export hiding_kernel_regex=$(IFS="|"; echo "${ivc_hiding_pattern[*]}")
 export rollup_honk_regex=$(IFS="|"; echo "${rollup_honk_patterns[*]}")
-# Combined ivc regex (kernel + app) kept for callers that just want "is this a chonk circuit?".
-export ivc_regex="${ivc_kernel_regex}|${ivc_app_regex}"
+
+# Classifies a circuit artifact by name: the three chonk circuit kinds, the two ultra-honk rollup
+# configurations, and plain ultra_honk for everything else. Every place that picks bb flags for a
+# circuit derives them from this, so the VKs the build writes and the bench that measures the same
+# circuits cannot disagree on its scheme.
+function circuit_kind {
+  local name=$1
+  if echo "$name" | grep -qE "${hiding_kernel_regex}"; then
+    echo hiding
+  elif echo "$name" | grep -qE "${ivc_kernel_regex}"; then
+    echo kernel
+  elif echo "$name" | grep -qE "${ivc_app_regex}"; then
+    echo app
+  elif echo "$name" | grep -qE "${rollup_honk_regex}"; then
+    echo rollup_honk
+  elif echo "$name" | grep -qE "rollup_root"; then
+    echo rollup_root
+  else
+    echo ultra_honk
+  fi
+}
 
 function on_exit {
   rm -f joblog.txt
@@ -63,7 +84,7 @@ function compile {
   # echo_stderr $program_hash_cmd
   local program_hash=$(dump_fail "$program_hash_cmd")
   echo_stderr "Hash preimage: $NOIR_HASH-$program_hash"
-  local hash=$(hash_str "$NOIR_HASH-$program_hash" $(cache_content_hash "^noir-projects/fnd/noir-protocol-circuits/bootstrap.sh"))
+  local hash=$(hash_str "$NOIR_HASH-$program_hash" $script_hash)
   # Note: an edge case: If you change the name of a circuit public input, but don't change any of the
   # circuit's bytecode, then this bootstrap script will not re-compile the circuits. You can force a
   # re-compilation by temporarily replacing $NOIR_HASH on the above two lines with:
@@ -103,26 +124,27 @@ function generate_vk {
   # Add verification key to original json, similar to contracts.
   # This adds keyAsBytes and keyAsFields to the JSON artifact.
   local bytecode_hash=$(jq -r '.bytecode' $json_path | sha256sum | tr -d ' -')
-  local hash=$(hash_str "$BB_HASH-$bytecode_hash-$name-3")
+  # A VK is a function of bb, the bytecode, and the bb flags it is written with. The flags are chosen
+  # below from the circuit's kind, so the key carries the kind (which is what the pattern files
+  # decide) and this script (which maps a kind to flags).
+  local kind=$(circuit_kind "$name")
+  local hash=$(hash_str "$BB_HASH-$bytecode_hash-$name-$kind" $script_hash)
   local key_path="$key_dir/$name.vk.data.json"
   if ! cache_download vk-$hash.tar.gz 1>&2; then
     SECONDS=0
     local outdir=$(mktemp -d)
     trap "rm -rf $outdir" EXIT
     function write_vk {
-      if echo "$name" | grep -qE "${hiding_kernel_regex}"; then
-        $BB write_vk --scheme chonk --circuit_kind hiding -b - -o $outdir
-      elif echo "$name" | grep -qE "${ivc_kernel_regex}"; then
-        $BB write_vk --scheme chonk --circuit_kind kernel -b - -o $outdir
-      elif echo "$name" | grep -qE "${ivc_app_regex}"; then
-        $BB write_vk --scheme chonk --circuit_kind app -b - -o $outdir
-      elif echo "$name" | grep -qE "${rollup_honk_regex}"; then
-        $BB write_vk --scheme ultra_honk --ipa_accumulation -b - -o $outdir
-      elif echo "$name" | grep -qE "rollup_root"; then
-        $BB write_vk --scheme ultra_honk --oracle_hash keccak -b - -o $outdir
-      else
-        $BB write_vk --scheme ultra_honk -b - -o $outdir
-      fi
+      case $kind in
+        hiding|kernel|app)
+          $BB write_vk --scheme chonk --circuit_kind $kind -b - -o $outdir ;;
+        rollup_honk)
+          $BB write_vk --scheme ultra_honk --ipa_accumulation -b - -o $outdir ;;
+        rollup_root)
+          $BB write_vk --scheme ultra_honk --oracle_hash keccak -b - -o $outdir ;;
+        *)
+          $BB write_vk --scheme ultra_honk -b - -o $outdir ;;
+      esac
     }
 
     echo_stderr "Generating vk for function: $name..."
@@ -140,20 +162,17 @@ function generate_vk {
     jq -n --arg vk "$vk_bytes" --argjson vk_fields "$vk_fields" --arg vk_hash "$vk_hash" \
       '{verificationKey: {bytes: $vk, fields: $vk_fields, hash: $vk_hash}}' > $key_path
     echo_stderr "Key output at: $key_path (${SECONDS}s)"
-
-    if echo "$name" | grep -qE "rollup_root"; then
-      # If we are a rollup root circuit, we also need to generate the solidity verifier.
-      local verifier_path="$key_dir/${name}_verifier.sol"
-      SECONDS=0
-      # Generate solidity verifier for this contract.
-      # TODO(AD) ensure this passes.
-      echo "$vk_bytes" | xxd -r -p | $BB write_solidity_verifier --scheme ultra_honk --disable_zk -k - -o $verifier_path --optimized
-      echo_stderr "Root rollup verifier at: $verifier_path (${SECONDS}s)"
-      # Include the verifier path if we create it.
-      cache_upload vk-$hash.tar.gz $key_path $verifier_path &> /dev/null
-    else
-      cache_upload vk-$hash.tar.gz $key_path &> /dev/null
-    fi
+    cache_upload vk-$hash.tar.gz $key_path &> /dev/null
+  fi
+  if [ "$kind" == "rollup_root" ]; then
+    # The root rollup circuit is verified on L1, so it also gets a solidity verifier. It is written on
+    # every build and never cached: it is the contract l1-contracts deploys, so it must always be what
+    # the flags below produce from the current VK.
+    local verifier_path="$key_dir/${name}_verifier.sol"
+    SECONDS=0
+    jq -r '.verificationKey.bytes' $key_path | xxd -r -p | \
+      $BB write_solidity_verifier --scheme ultra_honk --disable_zk -k - -o $verifier_path --optimized
+    echo_stderr "Root rollup verifier at: $verifier_path (${SECONDS}s)"
   fi
   # VK was downloaded from cache, update the JSON artifact with VK information
   jq -s '.[0] * .[1]' "$json_path" "$key_path" > "${json_path}.tmp"
@@ -180,10 +199,44 @@ function check_pinned_vk {
   fi
 }
 
-export -f hex_to_fields_json compile generate_vk check_pinned_vk
+# Paths under crates/ of the workspace members whose Nargo.toml declares the given package type.
+function workspace_packages {
+  local type=$1
+  grep -oP '(?<=crates/)[^"]+' Nargo.toml | \
+    while read -r dir; do
+      if grep -qE "^type[[:space:]]*=[[:space:]]*\"$type\"" ./crates/$dir/Nargo.toml; then
+        echo "$dir"
+      fi
+    done
+}
+
+# Libraries only compile as dependencies of the circuits, and nargo reports no warnings for a
+# dependency, so each is checked on its own with warnings denied. The circuits are not gated this
+# way: `nargo check` writes a Prover.toml into every circuit crate that lacks one, and the kernels
+# emit warnings that nargo reports only at compile time, such as a constant return value.
+function check_library_warnings {
+  set -euo pipefail
+  echo_stderr "Checking libraries for warnings..."
+  workspace_packages lib | \
+    parallel -v --line-buffer --tag $NARGO --program-dir ./crates/{} check --deny-warnings
+}
+
+export -f hex_to_fields_json circuit_kind compile generate_vk check_pinned_vk
 
 function build {
   set -eu
+
+  # Writes the workspace Nargo.toml the package listings below read.
+  if [ -f "package.json" ]; then
+    denoise "yarn && yarn generate_variants"
+  fi
+
+  # Before anything in target/ is touched, so a warning costs no recompile.
+  check_library_warnings
+
+  # Build output describing target/. Removed up front so a build that stops before regenerating it
+  # cannot leave a config beside artifacts it does not describe.
+  rm -f private_kernel_reset_config.json
 
   # If pinned-build.tar.gz exists, use it instead of compiling.
   if [ -f pinned-build.tar.gz ]; then
@@ -194,8 +247,9 @@ function build {
     mkdir -p $key_dir
     # The pin freezes bytecode AND VKs, but VKs depend on the current bb: a proof-system change can
     # alter the VK for unchanged bytecode, and a stale pinned VK makes proofs fail self-verification
-    # at proving time. Recompute each VK against the current bb (cached by BB_HASH and bytecode, so
-    # this is cheap until bb changes) and fail the build on any mismatch, forcing an explicit pin refresh.
+    # at proving time. Recompute each VK against the current bb (cached under generate_vk's key, so
+    # this is cheap until an input to the VK changes) and fail the build on any mismatch, forcing an
+    # explicit pin refresh.
     set +e
     ls target/*.json | xargs -n1 basename -s .json | grep -v simulated | \
       parallel -v --line-buffer --tag --halt now,fail=1 --memsuspend $(memsuspend_limit) \
@@ -203,50 +257,35 @@ function build {
     local code=$?
     cat joblog.txt
     set -e
-    return $code
+    [ "$code" -eq 0 ] || return $code
+    generate_reset_config
+    return
   fi
 
-  if [[ -z NOIR_PROTOCOL_CIRCUITS_SKIP_CHECK_WARNINGS ]]; then
-    echo_stderr "Checking libraries for warnings..."
-    parallel -v --line-buffer --tag $NARGO --program-dir {} check ::: \
-      ./crates/blob \
-      ./crates/private-kernel-lib \
-      ./crates/rollup-lib \
-      ./crates/types
-  fi
-
-  # We allow errors so we can output the joblog.
-  set +e
   rm -rf target
   mkdir -p $key_dir
 
-  [ -f "package.json" ] && denoise "yarn && yarn generate_variants"
-
-  grep -oP '(?<=crates/)[^"]+' Nargo.toml | \
-    while read -r dir; do
-      toml_file=./crates/$dir/Nargo.toml
-      if grep -q 'type = "bin"' "$toml_file"; then
-          echo "$(basename $dir)"
-      fi
-    done | \
+  # We allow errors so we can output the joblog.
+  set +e
+  workspace_packages bin | \
     parallel -v --line-buffer --tag --halt now,fail=1 --memsuspend $(memsuspend_limit) \
-      --joblog joblog.txt compile {}
+      --joblog joblog.txt compile {/}
   code=$?
   cat joblog.txt
   [ "$code" -eq 0 ] || return $code
 
-  check_reset_costs
+  generate_reset_config
 }
 
-# Fails if any `cost` in private_kernel_reset_config.json no longer matches the gate count
-# `bb gates` reports for that variant's freshly-compiled artifact. Keeps the catalog the variant
-# selector reads in sync with the current bb + reset circuits. Run after the variants are compiled.
-function check_reset_costs {
+# Writes private_kernel_reset_config.json: the variant catalog with the gate count `bb gates` reports
+# for each freshly-compiled variant. The variant selector downstream reads it, so the release stages
+# it into protocol-circuits-artifacts next to the circuits. Run after the variants are compiled.
+function generate_reset_config {
   set -euo pipefail
-  # The mock circuits reuse this script but have no reset variant catalog to check.
-  [ -f ./scripts/refresh_reset_costs.js ] || return 0
-  echo_stderr "Checking reset variant costs are up to date..."
-  denoise "BB=$BB node ./scripts/refresh_reset_costs.js --check"
+  # The mock circuits reuse this script but have no reset variant catalog.
+  [ -f ./scripts/generate_reset_config.js ] || return 0
+  echo_stderr "Measuring reset variant costs..."
+  denoise "BB=$BB node ./scripts/generate_reset_config.js"
 }
 
 function test_cmds {
@@ -257,6 +296,20 @@ function test_cmds {
     fi
     echo "$prefix noir-projects/fnd/scripts/run_test.sh noir-protocol-circuits $package $test"
   done
+  # Unit tests of the reset config generator, keyed on the scripts they cover rather than the circuits.
+  if [ -f ./scripts/generate_reset_config.test.js ]; then
+    local scripts_hash=$(hash_str $(cache_content_hash "^noir-projects/fnd/noir-protocol-circuits/scripts/"))
+    echo "$scripts_hash node --test noir-projects/fnd/noir-protocol-circuits/scripts/generate_reset_config.test.js"
+  fi
+  # The mock circuits reuse this script; the classifier test lives with the real circuits only.
+  if [ -f ./scripts/circuit_kind.test.sh ]; then
+    local classifier_hash=$(hash_str $(cache_content_hash \
+      "^noir-projects/fnd/noir-protocol-circuits/bootstrap.sh" \
+      "^noir-projects/fnd/noir-protocol-circuits/scripts/circuit_kind.test.sh" \
+      "^noir-projects/fnd/chonk_circuits.json" \
+      "^noir-projects/fnd/rollup_honk_circuits.json"))
+    echo "$classifier_hash noir-projects/fnd/noir-protocol-circuits/scripts/circuit_kind.test.sh"
+  fi
   # We don't blindly execute all circuits as some will have no `Prover.toml`.
   circuits_to_execute="
     private-kernel-init
@@ -295,13 +348,11 @@ function bench_cmds {
   prefix="$circuits_hash noir-projects/fnd/noir-protocol-circuits/scripts/run_bench.sh"
   for artifact in ./target/*.json; do
     [[ "$artifact" =~ _simulated ]] && continue
-    if echo "$artifact" | grep -qEf <(printf '%s\n' "${ivc_patterns[@]}"); then
-      echo "$prefix $artifact --scheme chonk"
-    elif echo "$artifact" | grep -qEf <(printf '%s\n' "${rollup_honk_patterns[@]}"); then
-      echo "$prefix $artifact --scheme ultra_honk --ipa_accumulation"
-    else
-      echo "$prefix $artifact --scheme ultra_honk"
-    fi
+    case $(circuit_kind "$(basename "$artifact" .json)") in
+      hiding|kernel|app) echo "$prefix $artifact --scheme chonk" ;;
+      rollup_honk) echo "$prefix $artifact --scheme ultra_honk --ipa_accumulation" ;;
+      *) echo "$prefix $artifact --scheme ultra_honk" ;;
+    esac
   done
 }
 
@@ -317,6 +368,7 @@ function bench {
 function generate_variants {
   set -eu
   yarn
+  node ./scripts/generate_variants.js --test
   node ./scripts/generate_variants.js
 }
 

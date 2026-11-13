@@ -40,13 +40,13 @@ function download_solc {
   cache_upload "$artifact" "$solc_path"
 }
 
-# We rely on noir-projects for the verifier contract.
-export hash=$(cache_content_hash \
+# We rely on noir-projects for the verifier contract. The noir hash covers the compiler that builds those
+# circuits, which the content patterns alone do not capture.
+export hash=$(hash_str $(../noir/bootstrap.sh hash) $(cache_content_hash \
   .rebuild_patterns \
-  ../noir/.rebuild_patterns \
   ../noir-projects/fnd/noir-protocol-circuits \
   ../barretenberg/cpp/.rebuild_patterns
-)
+))
 
 function build_src {
   echo_header "l1-contracts build_src"
@@ -112,7 +112,7 @@ function build_verifier {
   fi
 }
 
-# Generates the TypeScript L1 artifacts package (@aztec/l1-artifacts): ABIs, bytecode and storage
+# Generates the TypeScript L1 artifacts package (@aztec-foundation/l1-artifacts): ABIs, bytecode and storage
 # layouts compiled to dest/, plus the self-contained foundry bundle under l1-artifacts/l1-contracts
 # used by the runtime forge deploy path. Consumed by yarn-project via a portal link.
 # Must run after build_verifier: generate reads out/ including the compiled HonkVerifier.
@@ -136,6 +136,14 @@ function build {
 function test_cmds {
   echo "$hash cd l1-contracts && solhint --config ./.solhint.json \"src/**/*.sol\""
   echo "$hash cd l1-contracts && forge fmt --check"
+  echo "$hash cd l1-contracts && scripts/check_contract_sizes.sh"
+  # generated/HonkVerifier.sol is restored from the cache on a $hash hit, so compare it with the verifier
+  # the circuits build wrote. Keyed on that verifier as well as $hash: under $hash alone the check would
+  # be skipped as already passed in the one case it exists for, a $hash that did not move when the
+  # verifier did.
+  local rollup_verifier_path=../noir-projects/fnd/noir-protocol-circuits/target/keys/rollup_root_verifier.sol
+  local verifier_hash=$(hash_str $hash $(sha256sum < $rollup_verifier_path | cut -d' ' -f1))
+  echo "$verifier_hash cd l1-contracts && cmp generated/HonkVerifier.sol $rollup_verifier_path"
   echo "$hash cd l1-contracts && forge test"
   echo "$hash cd l1-contracts && forge test --no-match-contract UniswapPortalTest --match-contract MerkleCheck --ffi"
   echo "$hash:ISOLATE=1 cd l1-contracts && scripts/test_rollup_upgrade.sh"
@@ -214,6 +222,34 @@ function gas_report {
     exit 1
   fi
   mv gas_report.new.json gas_report.json
+}
+
+function partial_epoch_proof_gas_report {
+  check=${1:-"no"}
+  echo_header "l1-contracts partial epoch proof gas report"
+  forge --version
+
+  FORGE_GAS_REPORT=true forge test \
+    --match-contract "PartialEpochProof.*GasReportTest" \
+    --fuzz-seed 42 \
+    --json \
+    > partial_epoch_proof_gas_report.new.tmp
+  jq 'map(.functions |= with_entries(select(.key | startswith("gasReportSubmit"))) | select(.functions | length > 0))' \
+    partial_epoch_proof_gas_report.new.tmp > partial_epoch_proof_gas_report.new.json
+  rm partial_epoch_proof_gas_report.new.tmp
+  python3 scripts/render_partial_epoch_proof_gas_report.py \
+    partial_epoch_proof_gas_report.new.json \
+    partial_epoch_proof_gas_report.new.md
+  diff partial_epoch_proof_gas_report.new.json partial_epoch_proof_gas_report.json > partial_epoch_proof_gas_report.diff || true
+  diff partial_epoch_proof_gas_report.new.md partial_epoch_proof_gas_report.md >> partial_epoch_proof_gas_report.diff || true
+
+  if [ -s partial_epoch_proof_gas_report.diff -a "$check" = "check" ]; then
+    cat partial_epoch_proof_gas_report.diff
+    echo "Partial epoch proof gas report has changed. Please check the diffs above, then run './bootstrap.sh partial_epoch_proof_gas_report' to update it."
+    exit 1
+  fi
+  mv partial_epoch_proof_gas_report.new.json partial_epoch_proof_gas_report.json
+  mv partial_epoch_proof_gas_report.new.md partial_epoch_proof_gas_report.md
 }
 
 function bench_cmds {
@@ -434,10 +470,10 @@ function coverage_serve {
   python3 -m http.server --directory "coverage" 8000
 }
 
-# Publishes the @aztec/l1-artifacts npm package (TS ABIs/bytecode + the bundled foundry subtree used
+# Publishes the @aztec-foundation/l1-artifacts npm package (TS ABIs/bytecode + the bundled foundry subtree used
 # by the runtime forge deploy path). yarn-project consumes this via portal in-repo and via the
 # published version downstream, so it must publish before yarn-project's release (whose smoke test
-# installs packages that depend on @aztec/l1-artifacts@<version>).
+# installs packages that depend on @aztec-foundation/l1-artifacts@<version>).
 function release {
   echo_header "l1-contracts release"
   local version=${REF_NAME#v}

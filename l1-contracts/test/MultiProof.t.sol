@@ -245,6 +245,61 @@ contract MultiProofTest is RollupBase {
     );
   }
 
+  function testFirstProvenByRecordsFirstProver() public setUpFor("mixed_checkpoint_1") {
+    address alice = address(bytes20("alice"));
+    address bob = address(bytes20("bob"));
+
+    deal(address(testERC20), address(feeJuicePortal), 30e6 * 1e18);
+
+    _proposeCheckpoint("mixed_checkpoint_1", 1, 15e6);
+    _proposeCheckpoint("mixed_checkpoint_2", 2, 15e6);
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.Rollup__CheckpointNotProven.selector, 0, 1));
+    rollup.getFirstProvenBy(1);
+
+    string memory name = "mixed_checkpoint_";
+    _proveCheckpoints(name, 1, 1, alice);
+    // Bob proving the same range again must not take credit for checkpoint 1.
+    _proveCheckpoints(name, 1, 1, bob);
+    _proveCheckpoints(name, 1, 2, bob);
+
+    assertEq(rollup.getFirstProvenBy(1), alice, "Checkpoint 1 not credited to alice");
+    assertEq(rollup.getFirstProvenBy(2), bob, "Checkpoint 2 not credited to bob");
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.Rollup__CheckpointNotProven.selector, 2, 3));
+    rollup.getFirstProvenBy(3);
+  }
+
+  function testFirstProvenByWalksForwardToNextEntry() public setUpFor("mixed_checkpoint_1") {
+    address alice = address(bytes20("alice"));
+
+    deal(address(testERC20), address(feeJuicePortal), 30e6 * 1e18);
+
+    _proposeCheckpoint("mixed_checkpoint_1", 1, 15e6);
+    _proposeCheckpoint("mixed_checkpoint_2", 2, 15e6);
+
+    // A single proof of 1-2 only records an entry at checkpoint 2, so a lookup of 1 walks forward to it.
+    string memory name = "mixed_checkpoint_";
+    _proveCheckpoints(name, 1, 2, alice);
+
+    assertEq(rollup.getFirstProvenBy(1), alice, "Checkpoint 1 not credited to alice");
+    assertEq(rollup.getFirstProvenBy(2), alice, "Checkpoint 2 not credited to alice");
+  }
+
+  function testFirstProvenByRecordsZeroAddress() public setUpFor("mixed_checkpoint_1") {
+    deal(address(testERC20), address(feeJuicePortal), 30e6 * 1e18);
+
+    _proposeCheckpoint("mixed_checkpoint_1", 1, 15e6);
+
+    string memory name = "mixed_checkpoint_";
+    _proveCheckpoints(name, 1, 1, address(0));
+
+    assertEq(rollup.getFirstProvenBy(1), address(0), "Checkpoint 1 not credited to zero address");
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.Rollup__CheckpointNotProven.selector, 1, 0));
+    rollup.getFirstProvenBy(0);
+  }
+
   function testProofsAreInOneEpoch() public setUpFor("mixed_checkpoint_1") {
     _proposeCheckpoint("mixed_checkpoint_1", 1, 15e6);
     _proposeCheckpoint("mixed_checkpoint_2", TestConstants.AZTEC_EPOCH_DURATION + 1, 15e6);
@@ -257,5 +312,169 @@ contract MultiProofTest is RollupBase {
       address(bytes20("alice")),
       abi.encodeWithSelector(Errors.Rollup__StartAndEndNotSameEpoch.selector, 0, 1)
     );
+  }
+
+  function testPartialEpochProofDoesNotUpdateActivityScore() public setUpFor("mixed_checkpoint_1") {
+    address alice = address(bytes20("alice"));
+
+    // Mint some fee asset to the portal to cover the 30M mana spent.
+    deal(address(testERC20), address(feeJuicePortal), 30e6 * 1e18);
+
+    // Propose 2 checkpoints (we need 2 to ensure a partial proof is possible)
+    _proposeCheckpoint("mixed_checkpoint_1", 1, 15e6);
+    _proposeCheckpoint("mixed_checkpoint_2", 2, 15e6);
+
+    // Close epoch 0 by advancing time to the first slot of epoch 1
+    warpToL2Slot(EPOCH_DURATION);
+
+    // Record, prove, record
+    uint256 activityScoreBefore = rewardBooster.getActivityScore(alice).value;
+
+    _proveCheckpoints("mixed_checkpoint_", 1, 1, alice);
+
+    uint256 activityScoreAfter = rewardBooster.getActivityScore(alice).value;
+
+    assertEq(
+      activityScoreBefore, activityScoreAfter, "Alice's activity score changed despite not proving a whole epoch"
+    );
+  }
+
+  function testFullEpochProofUpdatesActivityScore() public setUpFor("mixed_checkpoint_1") {
+    address alice = address(bytes20("alice"));
+
+    // We need to mint some fee asset to the portal to cover the 30M mana spent.
+    deal(address(testERC20), address(feeJuicePortal), 30e6 * 1e18);
+
+    _proposeCheckpoint("mixed_checkpoint_1", 1, 15e6);
+    _proposeCheckpoint("mixed_checkpoint_2", 2, 15e6);
+
+    // Close epoch 0 by advancing time to the first slot of epoch 1
+    warpToL2Slot(EPOCH_DURATION);
+
+    uint256 activityScoreBefore = rewardBooster.getActivityScore(alice).value;
+
+    _proveCheckpoints("mixed_checkpoint_", 1, 2, alice);
+
+    uint256 activityScoreAfter = rewardBooster.getActivityScore(alice).value;
+
+    assertGt(
+      activityScoreAfter, activityScoreBefore, "Alice's activity score didn't increase despite proving a whole epoch"
+    );
+  }
+
+  function testSingleCheckpointFullEpochUpdatesActivityScore() public setUpFor("mixed_checkpoint_1") {
+    address alice = address(bytes20("alice"));
+
+    // We need to mint fee asset to the portal to cover the spent mana
+    deal(address(testERC20), address(feeJuicePortal), 30e6 * 1e18);
+
+    // Single checkpoint that will constitute the epoch
+    _proposeCheckpoint("mixed_checkpoint_1", 1, 15e6);
+
+    // Additional checkpoint in the new epoch to move the pending tip and close the previous epoch
+    _proposeCheckpoint("mixed_checkpoint_2", EPOCH_DURATION, 15e6);
+
+    uint256 activityScoreBefore = rewardBooster.getActivityScore(alice).value;
+
+    _proveCheckpoints("mixed_checkpoint_", 1, 1, alice);
+
+    uint256 activityScoreAfter = rewardBooster.getActivityScore(alice).value;
+
+    assertGt(
+      activityScoreAfter,
+      activityScoreBefore,
+      "Alice's score didn't increase despite proving a whole epoch, though it was only 1 checkpoint"
+    );
+  }
+
+  function testOpenEpochProofDoesNotUpdateActivityScore() public setUpFor("mixed_checkpoint_1") {
+    address alice = address(bytes20("alice"));
+
+    // We need to mint fee asset to the portal to cover the spend mana
+    deal(address(testERC20), address(feeJuicePortal), 15e6 * 1e18);
+
+    // Go to epoch 1 immediately. Booster only updates once in an epoch and epoch 0 is chosen as default, so we will not
+    // be able to update the score without warping
+    warpToL2Slot(EPOCH_DURATION);
+
+    _proposeCheckpoint("mixed_checkpoint_1", EPOCH_DURATION, 15e6);
+
+    uint256 activityScoreBefore = rewardBooster.getActivityScore(alice).value;
+
+    // Prove without closing
+    _proveCheckpoints("mixed_checkpoint_", 1, 1, alice);
+
+    uint256 activityScoreAfter = rewardBooster.getActivityScore(alice).value;
+
+    assertEq(activityScoreBefore, activityScoreAfter, "Proving an open epoch should not increase activity score");
+  }
+
+  function testFullEpochProofUpgradesOpenEpochRegistration() public setUpFor("mixed_checkpoint_1") {
+    address alice = address(bytes20("alice"));
+    Epoch epoch = Epoch.wrap(1);
+
+    deal(address(testERC20), address(feeJuicePortal), 15e6 * 1e18);
+
+    // Start in epoch 1, booster can't boost in epoch 0.
+    warpToL2Slot(EPOCH_DURATION);
+    _proposeCheckpoint("mixed_checkpoint_1", EPOCH_DURATION, 15e6);
+
+    // The proof lands while epoch 1 is still running. It covers every checkpoint the epoch will have, but the
+    // contract cannot know that yet. The proverId is alice (but the actual prover could be anyone at all)
+    _proveCheckpoints("mixed_checkpoint_", 1, 1, alice);
+    assertTrue(rollup.getHasSubmitted(epoch, 1, alice), "open-epoch proof not registered");
+    assertFalse(rollup.getHasSubmittedFullEpoch(epoch, 1, alice), "open-epoch proof registered as full epoch");
+
+    // Close epoch 1 without proposing anything else in it. The proof Alice submitted is now a full proof.
+    warpToL2Slot(2 * EPOCH_DURATION);
+    uint256 activityScoreBefore = rewardBooster.getActivityScore(alice).value;
+
+    // Alice submits the proof again
+    _proveCheckpoints("mixed_checkpoint_", 1, 1, alice);
+
+    assertGt(
+      rewardBooster.getActivityScore(alice).value, activityScoreBefore, "full-finished resubmission did not bump score"
+    );
+    assertTrue(rollup.getHasSubmittedFullEpoch(epoch, 1, alice), "registration not upgraded to full epoch");
+
+    // Alice is the only registration, so she must be owed the whole pool. Counting her shares twice in summedShares
+    // would halve this.
+    uint256 pool = rollup.getCollectiveProverRewardsForEpoch(epoch);
+    assertGt(pool, 0, "empty prover pool");
+    assertEq(rollup.getSpecificProverRewardsForEpoch(epoch, alice), pool, "alice not owed the whole pool");
+
+    // The registration can be upgraded only once.
+    _proveCheckpointsFail(
+      "mixed_checkpoint_",
+      1,
+      1,
+      alice,
+      abi.encodeWithSelector(Errors.Rollup__ProverHaveAlreadySubmitted.selector, alice, epoch)
+    );
+  }
+
+  function testNonFullResubmissionOfOpenEpochProofReverts() public setUpFor("mixed_checkpoint_1") {
+    address alice = address(bytes20("alice"));
+    Epoch epoch = Epoch.wrap(1);
+
+    deal(address(testERC20), address(feeJuicePortal), 30e6 * 1e18);
+
+    warpToL2Slot(EPOCH_DURATION);
+    _proposeCheckpoint("mixed_checkpoint_1", EPOCH_DURATION, 15e6);
+    _proveCheckpoints("mixed_checkpoint_", 1, 1, alice);
+
+    // A second checkpoint lands in epoch 1, so the earlier proof does not cover the whole epoch.
+    _proposeCheckpoint("mixed_checkpoint_2", EPOCH_DURATION + 1, 15e6);
+    warpToL2Slot(2 * EPOCH_DURATION);
+
+    // Resubmitting it after the epoch closed would re-read alice's shares at the decayed score, so it must revert.
+    _proveCheckpointsFail(
+      "mixed_checkpoint_",
+      1,
+      1,
+      alice,
+      abi.encodeWithSelector(Errors.Rollup__ProverHaveAlreadySubmitted.selector, alice, epoch)
+    );
+    assertFalse(rollup.getHasSubmittedFullEpoch(epoch, 1, alice), "partial registration marked full epoch");
   }
 }

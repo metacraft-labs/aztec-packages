@@ -9,20 +9,77 @@ import {
   StakingQueueConfigLib
 } from "@aztec/core/libraries/compressed-data/StakingQueueConfig.sol";
 import {Errors} from "@aztec/core/libraries/Errors.sol";
+import {ValidatorSelectionLib} from "@aztec/core/libraries/rollup/ValidatorSelectionLib.sol";
 import {StakingQueueLib, StakingQueue, DepositArgs} from "@aztec/core/libraries/StakingQueue.sol";
 import {TimeLib, Timestamp, Epoch} from "@aztec/core/libraries/TimeLib.sol";
 import {Slasher} from "@aztec/core/slashing/Slasher.sol";
 import {Governance} from "@aztec/governance/Governance.sol";
 import {GSE, AttesterConfig, IGSECore} from "@aztec/governance/GSE.sol";
-import {Proposal} from "@aztec/governance/interfaces/IGovernance.sol";
+import {Configuration, Proposal} from "@aztec/governance/interfaces/IGovernance.sol";
+import {CheckpointedUintLib} from "@aztec/governance/libraries/CheckpointedUintLib.sol";
+import {ConfigurationLib} from "@aztec/governance/libraries/ConfigurationLib.sol";
 import {ProposalLib} from "@aztec/governance/libraries/ProposalLib.sol";
 import {GovernanceProposer} from "@aztec/governance/proposer/GovernanceProposer.sol";
 import {G1Point, G2Point} from "@aztec/shared/libraries/BN254Lib.sol";
 import {CompressedTimeMath, CompressedTimestamp, CompressedEpoch} from "@aztec/shared/libraries/CompressedTimeMath.sol";
+import {Signature} from "@aztec/shared/libraries/SignatureLib.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@oz/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@oz/utils/math/Math.sol";
 import {SafeCast} from "@oz/utils/math/SafeCast.sol";
+import {Checkpoints} from "@oz/utils/structs/Checkpoints.sol";
+
+/*
+ * Gas floor for each `GSE.deposit` call made by `StakingLib.flushEntryQueue`.
+ *
+ * `GSE.deposit` verifies the proof of possession through an external call capped at the GSE's
+ * `proofOfPossessionGasLimit`. If that call receives less than the cap, the verifier can fail with non-empty revert
+ * data, which `flushEntryQueue` cannot tell apart from a genuinely invalid deposit, so it would refund and drop a
+ * valid entry. The flush therefore requires, before each call, enough gas that the verifier is guaranteed its full
+ * cap through both EIP-150 63/64 boundaries (Rollup -> GSE and GSE -> verifier). See
+ * `StakingLib.getFlushDepositGasFloor` for the derivation.
+ *
+ * The floor covers the verifier call only. A flush that clears it can still run out of gas later in the deposit
+ * (the attester's storage writes, the stake transfer, `Governance.deposit`). Those failures must reach
+ * `flushEntryQueue` as EMPTY revert data, so that it reverts the whole flush with `Staking__DepositOutOfGas` instead
+ * of refunding the entry. That holds because `GSE.deposit` makes its external calls either directly, which bubbles
+ * the callee's revert data unchanged, or through `SafeERC20`, which re-raises the callee's raw revert data; nothing
+ * on that path wraps a failed sub-call in a custom error. Changes to the GSE, the staking asset or the Governance
+ * deposit path must preserve this.
+ *
+ * The values are fixed and sized for the Glamsterdam gas schedule (EIP-8037 state gas, EIP-8038 repricing), measured
+ * against the `amsterdam` EVM (see `test/staking/flush-gas-floor/`). Under EIP-8037 the new storage slots that
+ * `GSE.deposit` writes before the verifier call dominate `FLUSH_GSE_PRE_CHECK_GAS`, and the new balance slot of a
+ * fresh withdrawer dominates `FLUSH_REFUND_GAS_RESERVE`. On earlier schedules (Prague, Osaka) the same path costs far
+ * less, so the floor is larger than needed there: honest flushes still activate, they only need a higher gas limit.
+ * The values MUST be re-derived at every later fork that reprices storage writes, account access or calls, and
+ * whenever the storage the GSE writes before the verifier changes. A floor that is too low lets a flush caller
+ * starve the verifier again. A floor that is too high only raises the gas limit an honest flusher must set, since
+ * unused gas is not charged, until it exceeds what one transaction can carry.
+ */
+
+/// @dev Gas `GSE.deposit` spends from its entry until the verifier call: the registration checks, the attester
+///      checkpoint writes and the `ownedPKs` write. Sized for Glamsterdam: measured at 682_620 under `amsterdam`
+///      (154_300 under `osaka`), the rest is margin. Follows EIP-8037 state gas for new storage slots and the deployed
+///      GSE's storage layout.
+uint256 constant FLUSH_GSE_PRE_CHECK_GAS = 700_000;
+
+/// @dev Gas the GSE spends between its last pre-check instruction and the verifier's first instruction, excluding the
+///      forwarded cap: one cold account access to the verifier and the argument encoding. Measured at about 2_700
+///      under `amsterdam`. Any shortfall is covered by the margin in `FLUSH_GSE_PRE_CHECK_GAS`, which sits behind the
+///      same 63/64 boundary.
+uint256 constant FLUSH_POP_CALL_GAS_RESERVE = 3000;
+
+/// @dev Gas the Rollup spends between its `gasleft()` check and the GSE's first instruction, excluding the forwarded
+///      gas: the comparison and a call to the GSE, which is warm because the flush has already called it. Measured at
+///      about 700.
+uint256 constant FLUSH_GSE_CALL_GAS_RESERVE = 2000;
+
+/// @dev Gas for the refund branch after a deposit fails with revert data: the stake transfer to a withdrawer that may
+///      not hold the staking asset yet (a new balance slot under EIP-8037) and the `FailedDeposit` event. Measured at
+///      about 131_000 under `amsterdam`. A GSE that fails during or before verification has spent at most the rest of
+///      the floor, so this part of the forwarded gas comes back to the Rollup.
+uint256 constant FLUSH_REFUND_GAS_RESERVE = 150_000;
 
 // None -> Does not exist in our setup
 // Validating -> Participating as validator
@@ -39,9 +96,11 @@ enum Status {
 /**
  * @notice Represents a validator's exit from the staking system
  * @dev Used to track withdrawal details and timing for validators leaving the system.
- *      The exit can be created in two scenarios:
+ *      The exit can be created in three scenarios:
  *      1. Voluntary withdrawal: Validator calls initiateWithdraw() -> recipientOrWithdrawer is the final recipient
- *      2. Slashing-induced exit: Validator gets slashed -> recipientOrWithdrawer is the withdrawer who must later
+ *      2. Attester calls initiateWithdrawByAttester() -> recipientOrWithdrawer is the withdrawer who must later
+ *         call initiateWithdraw() to specify a recipient
+ *      3. Slashing-induced exit: Validator gets slashed -> recipientOrWithdrawer is the withdrawer who must later
  *         call initiateWithdraw() to specify a recipient
  *
  *      The recipientOrWithdrawer field serves dual purposes:
@@ -76,6 +135,21 @@ struct AttesterView {
   AttesterConfig config;
 }
 
+struct AttesterExitLimitState {
+  Timestamp window;
+  uint256 validatorCount;
+  uint256 committeeSize;
+  uint256 used;
+  uint256 allowance;
+  bool canExit;
+}
+
+struct AttesterExitAuthorization {
+  address attester;
+  uint256 deadline;
+  Signature signature;
+}
+
 struct StakingStorage {
   IERC20 stakingAsset;
   address slasher;
@@ -96,6 +170,7 @@ struct StakingStorage {
   // slasher takes over.
   address legacySlasher;
   CompressedTimestamp legacySlasherAuthorizedUntil;
+  Checkpoints.Trace224 attesterExitHistory;
 }
 
 library StakingLib {
@@ -109,8 +184,12 @@ library StakingLib {
   using CompressedTimeMath for Timestamp;
   using CompressedTimeMath for CompressedEpoch;
   using CompressedTimeMath for Epoch;
+  using CheckpointedUintLib for Checkpoints.Trace224;
+  using ConfigurationLib for Configuration;
 
   bytes32 private constant STAKING_SLOT = keccak256("aztec.core.staking.storage");
+
+  uint256 internal constant ATTESTER_EXIT_QUOTIENT = 20;
 
   /// @notice Delay between queuing a slasher replacement and being able to finalize it.
   uint256 internal constant SLASHER_EXECUTION_DELAY = 60 days;
@@ -392,6 +471,10 @@ library StakingLib {
    *      - On failure: refunds their stake and emits FailedDeposit event
    *
    *      The function will revert if:
+   *      - Less than `getFlushDepositGasFloor` gas is left right before any GSE deposit call, so that the caller's
+   *        gas limit cannot starve the proof-of-possession check of a valid entry into a refund. Callers must
+   *        therefore size the transaction with `eth_estimateGas`, which accounts for the floor, or leave that much
+   *        gas beyond what the flush consumes; a limit derived from simulated gas used fails for small flushes.
    *      - A deposit fails due to out of gas (to prevent queue draining attacks)
    *
    *      The function approves the GSE contract to spend the total stake amount needed for all deposits,
@@ -419,21 +502,25 @@ library StakingLib {
     // Approve the GSE to spend the total stake amount needed for all deposits.
     uint256 amount = store.gse.ACTIVATION_THRESHOLD();
     store.stakingAsset.approve(address(store.gse), amount * numToDequeue);
+    // Read once per flush: only the GSE owner can change the cap, and nothing the flush calls can reach the owner.
+    uint256 requiredGas = getFlushDepositGasFloor(store.gse.proofOfPossessionGasLimit());
+    address gse = address(store.gse);
     uint256 depositCount = 0;
     for (uint256 i = 0; i < numToDequeue; i++) {
       DepositArgs memory args = store.entryQueue.dequeue();
-      (bool success, bytes memory data) = address(store.gse)
-        .call(
-          abi.encodeWithSelector(
-            IGSECore.deposit.selector,
-            args.attester,
-            args.withdrawer,
-            args.publicKeyInG1,
-            args.publicKeyInG2,
-            args.proofOfPossession,
-            args.moveWithLatestRollup
-          )
-        );
+      bytes memory depositCall = abi.encodeWithSelector(
+        IGSECore.deposit.selector,
+        args.attester,
+        args.withdrawer,
+        args.publicKeyInG1,
+        args.publicKeyInG2,
+        args.proofOfPossession,
+        args.moveWithLatestRollup
+      );
+      // Kept immediately before the call: `FLUSH_GSE_CALL_GAS_RESERVE` only covers the instructions in between.
+      uint256 availableGas = gasleft();
+      require(availableGas >= requiredGas, Errors.Staking__InsufficientFlushGas(requiredGas, availableGas));
+      (bool success, bytes memory data) = gse.call(depositCall);
       if (success) {
         depositCount++;
         emit IStakingCore.Deposit(
@@ -489,7 +576,7 @@ library StakingLib {
 
     if (store.exits[_attester].exists) {
       // If there is already an exit, we either started it and should revert
-      // or it is because of a slash and we should update the recipient
+      // or it is because of a slash or attester-initiated exit and we should update the recipient
       // Still only if we are the withdrawer
       // We DO NOT update the exitableAt
       require(!store.exits[_attester].isRecipient, Errors.Staking__NothingToExit(_attester));
@@ -508,27 +595,148 @@ library StakingLib {
       address withdrawer = store.gse.getWithdrawer(_attester);
       require(msg.sender == withdrawer, Errors.Staking__NotWithdrawer(withdrawer, msg.sender));
 
-      (uint256 actualAmount, bool removed, uint256 withdrawalId) = store.gse.withdraw(_attester, effectiveBalance);
-      require(removed, Errors.Staking__WithdrawFailed(_attester));
-
-      store.exits[_attester] = Exit({
-        withdrawalId: withdrawalId,
-        amount: actualAmount,
-        exitableAt: Timestamp.wrap(block.timestamp) + store.exitDelay.decompress(),
-        recipientOrWithdrawer: _recipient,
-        isRecipient: true,
-        exists: true
-      });
+      (uint256 actualAmount,) = _withdrawAndCreateExit(store, _attester, effectiveBalance, _recipient, true);
       emit IStakingCore.WithdrawInitiated(_attester, _recipient, actualAmount);
     }
 
     return true;
   }
 
+  /**
+   * @notice Initiate an exit by the attester
+   *     @dev Checks performed:
+   *        1. Msg sender is the attester
+   *        2. Rollup is canonical and latest
+   *        3. The attester hasn't initiated an exit and has a positive effective balance
+   *        4. Exit allowance is not completely consumed
+   *  @param _attester The validator address to withdraw stake for
+   */
+  function initiateWithdrawByAttester(address _attester) internal {
+    require(msg.sender == _attester, Errors.Staking__NotAttester(_attester, msg.sender));
+
+    checkAttesterExitInstance();
+
+    (uint256 effectiveBalance, address withdrawer) = _prepareAttesterWithdrawal(_attester);
+
+    consumeAttesterExitAllowance();
+
+    _initiateAttesterWithdrawal(_attester, effectiveBalance, withdrawer);
+  }
+
+  function initiateWithdrawByAttesterWithSignature(address _attester) internal {
+    checkAttesterExitInstance();
+
+    (uint256 effectiveBalance, address withdrawer) = _prepareAttesterWithdrawal(_attester);
+
+    consumeAttesterExitAllowance();
+
+    _initiateAttesterWithdrawal(_attester, effectiveBalance, withdrawer);
+  }
+
+  function initiateWithdrawByAttesterBatchItem(address _attester) internal {
+    (uint256 effectiveBalance, address withdrawer) = _prepareAttesterWithdrawal(_attester);
+    _initiateAttesterWithdrawal(_attester, effectiveBalance, withdrawer);
+  }
+
+  /// @notice Check that attester exit is allowed at this time and consume 1 exit space
+  /// @dev This checks that there are enough validators to form a committee after the exit and that there is enough
+  /// space in the window. N.B. The allowance will shrink if validators exit using withdraw accounts.
+  function consumeAttesterExitAllowance() internal {
+    consumeAttesterExitAllowance(1);
+  }
+
+  function consumeAttesterExitAllowance(uint256 _exitCount) internal {
+    uint256 validatorCount = getAttesterCountAtTime(Timestamp.wrap(block.timestamp));
+    uint256 committeeSize = ValidatorSelectionLib.getStorage().targetCommitteeSize;
+
+    require(
+      validatorCount >= _exitCount && validatorCount - _exitCount >= committeeSize,
+      Errors.Staking__AttesterExitPoolTooSmall(validatorCount, committeeSize)
+    );
+
+    uint256 allowance = _getAttesterExitAllowance(validatorCount - _exitCount + 1);
+    uint256 used = getAttesterExitUsage();
+    uint256 usedAtFinalExit = used + _exitCount - 1;
+
+    require(usedAtFinalExit < allowance, Errors.Staking__AttesterExitLimitExceeded(usedAtFinalExit, allowance));
+
+    getStorage().attesterExitHistory.add(_exitCount);
+  }
+
+  function consumeAttesterExitAllowanceUpTo(uint256 _requestedExitCount) internal returns (uint256 exitCount) {
+    uint256 validatorCount = getAttesterCountAtTime(Timestamp.wrap(block.timestamp));
+    uint256 committeeSize = ValidatorSelectionLib.getStorage().targetCommitteeSize;
+    uint256 used = getAttesterExitUsage();
+
+    uint256 availableByCommittee = validatorCount > committeeSize ? validatorCount - committeeSize : 0;
+    // For k exits, used + k - 1 < floor((validatorCount - k) / quotient). Rearranging gives
+    // (quotient + 1) * k <= validatorCount - quotient * used.
+    uint256 usedWeight = used * ATTESTER_EXIT_QUOTIENT;
+    uint256 availableByLimit =
+      validatorCount > usedWeight ? (validatorCount - usedWeight) / (ATTESTER_EXIT_QUOTIENT + 1) : 0;
+
+    exitCount = Math.min(_requestedExitCount, Math.min(availableByCommittee, availableByLimit));
+    if (exitCount > 0) {
+      getStorage().attesterExitHistory.add(exitCount);
+    }
+  }
+
   function updateStakingQueueConfig(StakingQueueConfig memory _config) internal {
     assertValidQueueConfig(_config);
     getStorage().queueConfig = _config.compress();
     emit IStakingCore.StakingQueueConfigUpdated(_config);
+  }
+
+  /// @dev Governance's canonical instance and the GSE's latest rollup can disagree if an upgrade does not add
+  /// the new rollup to this GSE. In that state no rollup can safely enforce the shared exit limit, so both must match.
+  function checkAttesterExitInstance() internal view {
+    StakingStorage storage store = getStorage();
+
+    Governance gov = store.gse.getGovernance();
+    GovernanceProposer proposer = GovernanceProposer(gov.governanceProposer());
+
+    require(address(this) == proposer.getInstance(), Errors.Staking__NotCanonical(address(this)));
+
+    address latestRollup = store.gse.getLatestRollup();
+    require(address(this) == latestRollup, Errors.Staking__NotLatestRollup(address(this), latestRollup));
+  }
+
+  function getAttesterExitWindow() internal view returns (Timestamp) {
+    StakingStorage storage store = getStorage();
+    Governance gov = store.gse.getGovernance();
+    Configuration memory governanceConfig = gov.getConfiguration();
+    return governanceConfig.getWithdrawalDelay();
+  }
+
+  function getAttesterExitUsage() internal view returns (uint256) {
+    return getAttesterExitUsage(getAttesterExitWindow());
+  }
+
+  function getAttesterExitUsage(Timestamp _exitWindow) internal view returns (uint256) {
+    StakingStorage storage store = getStorage();
+    Timestamp currentTime = Timestamp.wrap(block.timestamp);
+    uint256 pastExits = currentTime < _exitWindow ? 0 : store.attesterExitHistory.valueAt(currentTime - _exitWindow);
+    return store.attesterExitHistory.valueNow() - pastExits;
+  }
+
+  function getAttesterExitLimitState() internal view returns (AttesterExitLimitState memory state) {
+    StakingStorage storage store = getStorage();
+
+    state.window = getAttesterExitWindow();
+    state.validatorCount = getAttesterCountAtTime(Timestamp.wrap(block.timestamp));
+    state.committeeSize = ValidatorSelectionLib.getStorage().targetCommitteeSize;
+    state.used = getAttesterExitUsage(state.window);
+    state.allowance = _getAttesterExitAllowance(state.validatorCount);
+
+    Governance gov = store.gse.getGovernance();
+    GovernanceProposer proposer = GovernanceProposer(gov.governanceProposer());
+
+    // It can technically happen that an upgrade does not add the new rollup to this GSE.
+    // If there is a split, it is unclear which Rollup should enforce the limit.
+    // Since this shouldn't happen under normal upgrades, it is easier to limit attester exits just to a canonical
+    // latest rollup.
+    state.canExit = address(this) == proposer.getInstance() && address(this) == store.gse.getLatestRollup()
+      && state.validatorCount > state.committeeSize && state.used < state.allowance;
   }
 
   function getNextFlushableEpoch() internal view returns (Epoch) {
@@ -667,6 +875,51 @@ library StakingLib {
     return getStorage().availableValidatorFlushes;
   }
 
+  /**
+   * @notice The least gas `flushEntryQueue` must hold right before each `GSE.deposit` call, so that the
+   *         proof-of-possession verifier inside it is guaranteed its full gas cap.
+   * @dev Derivation. Under EIP-150 a frame forwards at most all but one 64th of the gas it holds at a CALL, counted
+   *      after the CALL's own upfront charges (account access, memory): a callee asking for `X` receives
+   *      `min(X, G - G / 64)`. A frame that must hand `X` to its callee therefore has to hold `G >= X * 64 / 63` at
+   *      the CALL, which `X * 64 / 63 + 1` rounds up in integer arithmetic. Two such boundaries sit between the flush
+   *      and the verifier, and the floor walks back through them:
+   *
+   *        1. GSE -> verifier. The GSE calls the verifier with `{gas: cap}`, so at that CALL it must hold
+   *           `cap * 64 / 63 + 1`, plus `FLUSH_POP_CALL_GAS_RESERVE` for what it spends between holding that amount
+   *           and the CALL being charged (argument encoding, cold access to the verifier).
+   *        2. Inside the GSE. Before it reaches the verifier, `GSE.deposit` spends `FLUSH_GSE_PRE_CHECK_GAS` on its
+   *           checks and storage writes, so at its entry it must hold that much more.
+   *        3. Rollup -> GSE. `flushEntryQueue` calls the GSE without a gas argument, so the GSE receives all but one
+   *           64th of what the Rollup holds at the CALL: the Rollup must hold the GSE entry amount `* 64 / 63 + 1`,
+   *           plus `FLUSH_GSE_CALL_GAS_RESERVE` for what it spends between the `gasleft()` read and the CALL being
+   *           charged.
+   *        4. Refund. `FLUSH_REFUND_GAS_RESERVE` is added last and unscaled. It is forwarded to the GSE with
+   *           everything else and comes back because the GSE does not consume it on the failure paths that end in a
+   *           refund: a deposit rejected before the verifier spends far less than `FLUSH_GSE_PRE_CHECK_GAS`, and a
+   *           deposit rejected by the verifier with its full cap consumes at most the GSE entry amount, so at least
+   *           63/64 of the reserve returns, on top of the 1/64 the Rollup kept at the CALL. A deposit that runs out
+   *           of gas after the verifier reverts with empty data and the whole flush reverts, so no refund is
+   *           attempted. The reserve is needed because the retained 1/64 alone (about 15k at the default cap) does
+   *           not cover the refund branch.
+   *
+   *      At the default 250k cap: 253_969 + 3_000 = 256_969 at the verifier CALL, 956_969 at the GSE entry, and
+   *      972_159 + 2_000 + 150_000 = 1_124_159 at the Rollup. A floor of `cap * 64 / 63` plus a reserve, without
+   *      `FLUSH_GSE_PRE_CHECK_GAS`, would be about 285k and would let the Rollup pass its check while the verifier is
+   *      still starved: the GSE spends the pre-check gas inside its own frame, behind the Rollup -> GSE boundary.
+   *
+   *      The constants are sized for the Glamsterdam gas schedule (see their definitions). All arithmetic is uint256
+   *      and checked, and a `uint64` cap cannot overflow it, so an absurdly large cap yields a floor no transaction
+   *      can meet and every flush that reaches a deposit reverts with `Staking__InsufficientFlushGas` until the cap
+   *      is lowered.
+   * @param _proofOfPossessionGasLimit The GSE's current `proofOfPossessionGasLimit`
+   * @return The gas floor checked before each deposit call
+   */
+  function getFlushDepositGasFloor(uint256 _proofOfPossessionGasLimit) internal pure returns (uint256) {
+    uint256 gseGasAtVerifierCall = (_proofOfPossessionGasLimit * 64) / 63 + 1 + FLUSH_POP_CALL_GAS_RESERVE;
+    uint256 gseGasAtEntry = FLUSH_GSE_PRE_CHECK_GAS + gseGasAtVerifierCall;
+    return (gseGasAtEntry * 64) / 63 + 1 + FLUSH_GSE_CALL_GAS_RESERVE + FLUSH_REFUND_GAS_RESERVE;
+  }
+
   /// @notice Enforces invariants on a {StakingQueueConfig}.
   ///         - `normalFlushSizeMin > 0`: a zero floor can close the queue on a running rollup.
   ///         - `normalFlushSizeQuotient > 0`: {getEntryQueueFlushSize} divides by this field.
@@ -701,6 +954,50 @@ library StakingLib {
     }
   }
 
+  function _initiateAttesterWithdrawal(address _attester, uint256 _effectiveBalance, address _withdrawer) private {
+    StakingStorage storage store = getStorage();
+    (uint256 amountWithdrawn, uint256 withdrawalId) =
+      _withdrawAndCreateExit(store, _attester, _effectiveBalance, _withdrawer, false);
+
+    emit IStakingCore.WithdrawInitiatedByAttester(_attester, _withdrawer, amountWithdrawn, withdrawalId);
+  }
+
+  function _withdrawAndCreateExit(
+    StakingStorage storage _store,
+    address _attester,
+    uint256 _effectiveBalance,
+    address _recipientOrWithdrawer,
+    bool _isRecipient
+  ) private returns (uint256 amountWithdrawn, uint256 withdrawalId) {
+    bool removed;
+    (amountWithdrawn, removed, withdrawalId) = _store.gse.withdraw(_attester, _effectiveBalance);
+    require(removed, Errors.Staking__WithdrawFailed(_attester));
+
+    _store.exits[_attester] = Exit({
+      withdrawalId: withdrawalId,
+      amount: amountWithdrawn,
+      exitableAt: Timestamp.wrap(block.timestamp) + _store.exitDelay.decompress(),
+      recipientOrWithdrawer: _recipientOrWithdrawer,
+      isRecipient: _isRecipient,
+      exists: true
+    });
+  }
+
+  function _prepareAttesterWithdrawal(address _attester)
+    private
+    view
+    returns (uint256 effectiveBalance, address withdrawer)
+  {
+    StakingStorage storage store = getStorage();
+
+    require(!store.exits[_attester].exists, Errors.Staking__AlreadyExiting(_attester));
+
+    effectiveBalance = store.gse.effectiveBalanceOf(address(this), _attester);
+    require(effectiveBalance > 0, Errors.Staking__NothingToExit(_attester));
+
+    withdrawer = store.gse.getWithdrawer(_attester);
+  }
+
   /// @notice Whether `_caller` can call {slash}.
   /// @dev The active slasher always qualifies. The legacy slasher qualifies only while its
   ///      drain window is still open, so quorum-backed rounds queued before a rotation can
@@ -732,5 +1029,9 @@ library StakingLib {
     uint256 newFlushes = getEntryQueueFlushSize(activeAttesterCount);
 
     return (newFlushes, currentEpoch, true);
+  }
+
+  function _getAttesterExitAllowance(uint256 _validatorCount) private pure returns (uint256) {
+    return _validatorCount == 0 ? 0 : (_validatorCount - 1) / ATTESTER_EXIT_QUOTIENT;
   }
 }

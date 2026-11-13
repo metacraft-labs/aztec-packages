@@ -2,6 +2,14 @@
 // Copyright 2024 Aztec Labs.
 pragma solidity >=0.8.27;
 
+import {IRollupCore} from "@aztec/core/interfaces/IRollup.sol";
+import {
+  FeeConfigLib,
+  CompressedFeeConfig,
+  FeeAssetValue,
+  PriceLib
+} from "@aztec/core/libraries/compressed-data/fees/FeeConfig.sol";
+import {Errors} from "@aztec/core/libraries/Errors.sol";
 import {
   FeeLib,
   ManaMinFeeComponents,
@@ -20,22 +28,79 @@ import {
   IValidatorSelection
 } from "@aztec/core/reward-boost/RewardBooster.sol";
 import {IRewardDistributor} from "@aztec/governance/interfaces/IRewardDistributor.sol";
+import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 
 library RewardExtLib {
-  function initializeConfig(RewardConfig memory _config) external {
+  using FeeConfigLib for CompressedFeeConfig;
+  using PriceLib for EthValue;
+
+  /**
+   * @notice Writes the reward configuration and the initial sequencer reward calculator at construction
+   * @param _config The full reward configuration, including the immutable distributor and booster
+   * @param _sequencerRewardCalculator The initial sequencer reward calculator, or zero for none
+   */
+  function initializeConfig(RewardConfig memory _config, address _sequencerRewardCalculator) external {
     RewardLib.initializeConfig(_config);
+    RewardLib.setSequencerRewardCalculator(_sequencerRewardCalculator);
   }
 
+  /**
+   * @dev The owner-only fee and reward setters below hold their validation, mutation and event
+   *      emission here rather than in the Rollup. The Rollup sits close to the EIP-170 limit, and
+   *      an event's topic hash plus its argument encoding costs it ~75 bytes per emit site; the
+   *      `FeeLib` mutators inline another few hundred. A delegatecall keeps `msg.sender`, storage
+   *      and the log's emitting address, so moving them across this boundary is behaviour
+   *      preserving, and it only costs gas on cold admin paths. `ProposeLib` calls `FeeLib`
+   *      directly, so `propose` is unaffected.
+   */
   function updateConfig(MutableRewardConfig memory _config) external {
     RewardLib.updateConfig(_config);
+    emit IRollupCore.RewardConfigUpdated(_config);
   }
 
-  function claimSequencerRewards(address _sequencer) external returns (uint256) {
-    return RewardLib.claimSequencerRewards(_sequencer);
+  function updateL1GasFeeOracle() external {
+    FeeLib.updateL1GasFeeOracle();
   }
 
-  function claimProverRewards(address _prover, Epoch[] memory _epochs) external returns (uint256) {
-    return RewardLib.claimProverRewards(_prover, _epochs);
+  function updateProvingCostPerMana(EthValue _provingCostPerMana) external {
+    FeeLib.updateProvingCostPerMana(_provingCostPerMana);
+  }
+
+  function updateManaTarget(uint256 _manaTarget) external {
+    uint256 currentManaTarget = FeeLib.getStorage().config.getManaTarget();
+    require(_manaTarget >= currentManaTarget, Errors.Rollup__InvalidManaTarget(currentManaTarget, _manaTarget));
+    FeeLib.updateManaTarget(_manaTarget);
+    emit IRollupCore.ManaTargetUpdated(_manaTarget);
+  }
+
+  function updateProtocolFeeMargin(uint16 _bps) external {
+    (bool changed, uint16 oldBps) = FeeLib.updateProtocolFeeMargin(_bps);
+    if (changed) {
+      emit IRollupCore.ProtocolFeeMarginUpdated(oldBps, _bps);
+    }
+  }
+
+  function updateProtocolFeeRecipient(address _recipient) external {
+    address oldRecipient = RewardLib.updateProtocolFeeRecipient(_recipient);
+    emit IRollupCore.ProtocolFeeRecipientUpdated(oldRecipient, _recipient);
+  }
+
+  /**
+   * @notice Replaces the sequencer reward calculator and emits {IRollupCore.SequencerRewardCalculatorUpdated}
+   * @dev Accepts any address, including zero (no calculator). The event is emitted even if the value is unchanged.
+   * @param _calculator The new calculator, or zero for none
+   */
+  function updateSequencerRewardCalculator(address _calculator) external {
+    address oldCalculator = RewardLib.setSequencerRewardCalculator(_calculator);
+    emit IRollupCore.SequencerRewardCalculatorUpdated(oldCalculator, _calculator);
+  }
+
+  function claimSequencerRewards(address _sequencer, IERC20 _feeAsset) external returns (uint256) {
+    return RewardLib.claimSequencerRewards(_sequencer, _feeAsset);
+  }
+
+  function claimProverRewards(address _prover, Epoch[] memory _epochs, IERC20 _feeAsset) external returns (uint256) {
+    return RewardLib.claimProverRewards(_prover, _epochs, _feeAsset);
   }
 
   function deployRewardBooster(RewardBoostConfig memory _config) external returns (IBoosterCore) {
@@ -65,6 +130,10 @@ library RewardExtLib {
     return RewardLib.getHasSubmitted(_epoch, _length, _prover);
   }
 
+  function getHasSubmittedFullEpoch(Epoch _epoch, uint256 _length, address _prover) external view returns (bool) {
+    return RewardLib.getHasSubmittedFullEpoch(_epoch, _length, _prover);
+  }
+
   function getHasClaimed(address _prover, Epoch _epoch) external view returns (bool) {
     return RewardLib.getHasClaimed(_prover, _epoch);
   }
@@ -79,6 +148,14 @@ library RewardExtLib {
 
   function getRewardDistributor() external view returns (IRewardDistributor) {
     return RewardLib.getStorage().config.rewardDistributor;
+  }
+
+  /**
+   * @notice Returns the current sequencer reward calculator
+   * @return The calculator, or zero if every checkpoint receives the default sequencer reward
+   */
+  function getSequencerRewardCalculator() external view returns (address) {
+    return RewardLib.getSequencerRewardCalculator();
   }
 
   // FeeLib/STFLib/ProposeLib view wrappers - overflow from RollupOperationsExtLib
@@ -99,6 +176,10 @@ library RewardExtLib {
     return STFLib.getEpochForCheckpoint(_checkpointNumber);
   }
 
+  function getFirstProvenBy(uint256 _checkpointNumber) external view returns (address) {
+    return STFLib.getFirstProvenBy(_checkpointNumber);
+  }
+
   function getL1FeesAt(Timestamp _timestamp) external view returns (L1FeeData memory) {
     return FeeLib.getL1FeesAt(_timestamp);
   }
@@ -111,12 +192,8 @@ library RewardExtLib {
     return FeeLib.getProvingCostPerMana();
   }
 
-  function getManaTarget() external view returns (uint256) {
-    return FeeLib.getManaTarget();
-  }
-
-  function getManaLimit() external view returns (uint256) {
-    return FeeLib.getManaLimit();
+  function getProvingCostPerManaInFeeAsset(EthPerFeeAssetE12 _ethPerFeeAsset) external view returns (FeeAssetValue) {
+    return FeeLib.getProvingCostPerMana().toFeeAsset(_ethPerFeeAsset);
   }
 
   function summedMinFee(ManaMinFeeComponents memory _components) external pure returns (uint256) {

@@ -1,5 +1,7 @@
 use crate::components::previous_kernel_for_tail_validator::validate_previous_kernel_for_tail;
-use super::TestBuilder;
+use super::{
+    NOTE_HASH_SILOING_AMOUNT, NULLIFIER_SILOING_AMOUNT, PRIVATE_LOG_SILOING_AMOUNT, TestBuilder,
+};
 use protocol_test_utils::{assert_array_eq, pad_end};
 use types::{address::AztecAddress, traits::FromField};
 
@@ -21,17 +23,17 @@ fn squashing_and_siloing_and_ordering() {
     let nullifiers = builder.previous_kernel.nullifiers.storage();
     let private_logs = builder.previous_kernel.private_logs.storage();
     // Shuffle.
-    builder.previous_kernel.note_hashes = BoundedVec::from_parts_unchecked(
+    builder.previous_kernel.note_hashes = BoundedVec::from_parts(
         pad_end(
             [note_hashes[2], note_hashes[0], note_hashes[3], note_hashes[1]],
         ),
         4,
     );
-    builder.previous_kernel.nullifiers = BoundedVec::from_parts_unchecked(
+    builder.previous_kernel.nullifiers = BoundedVec::from_parts(
         pad_end([nullifiers[1], nullifiers[2], nullifiers[0], nullifiers[3]]),
         4,
     );
-    builder.previous_kernel.private_logs = BoundedVec::from_parts_unchecked(
+    builder.previous_kernel.private_logs = BoundedVec::from_parts(
         pad_end([
             private_logs[4],
             private_logs[0],
@@ -223,6 +225,51 @@ fn terminal_reset_squashing_every_nullifier_is_rejected_by_tail() {
     validate_previous_kernel_for_tail(output, false);
 }
 
+// A note hash created before `end_setup` and nullified after it is the one linked pair the terminal reset does
+// not squash. The app links the note's unique hash, which it builds from a nonce it gets from an unconstrained
+// oracle. The two tests below run the reset and then the tail check, as `private_kernel_reset_tail_to_public`
+// does: the tail accepts the link only if it equals the unique hash the reset outputs for that note.
+fn build_previous_phase_pair(note_hash_index_for_nonce: u32) -> TestBuilder {
+    let mut builder = TestBuilder::new();
+
+    builder.previous_kernel.set_protocol_nullifier();
+    builder.previous_kernel.set_fee_payer(AztecAddress::from_field(234234));
+
+    builder.previous_kernel.append_note_hashes(1);
+    builder.previous_kernel.end_setup();
+
+    let note_hash = builder.previous_kernel.note_hashes.get(0);
+    let linked_note_hash =
+        builder.compute_output_unique_siloed_note_hash(note_hash, note_hash_index_for_nonce);
+    builder.previous_kernel.add_nullifier_for_note_hash(456, linked_note_hash.innermost());
+    builder.previous_kernel.append_public_call_requests(1);
+
+    builder
+}
+
+#[test]
+fn nullifier_linked_to_previous_phase_unique_note_hash_is_accepted_by_tail() {
+    let builder = build_previous_phase_pair(0);
+
+    let output = builder.execute_with_siloing();
+
+    // Nothing is squashed: the pair is emitted as-is.
+    assert_eq(output.end.note_hashes.length, 1);
+    assert_eq(output.end.nullifiers.length, 2);
+
+    validate_previous_kernel_for_tail(output, true);
+}
+
+#[test(should_fail_with = "Hinted siloed note hash does not match nullified note hash")]
+fn nullifier_linked_with_wrong_note_nonce_is_rejected_by_tail() {
+    // The note hash is at index 0. A nonce for index 1 gives a unique hash the reset does not output.
+    let builder = build_previous_phase_pair(1);
+
+    let output = builder.execute_with_siloing();
+
+    validate_previous_kernel_for_tail(output, true);
+}
+
 #[test(should_fail_with = "Propagated note hash does not match")]
 fn extra_note_hash_beyond_claimed_length() {
     let mut builder = TestBuilder::new();
@@ -230,7 +277,7 @@ fn extra_note_hash_beyond_claimed_length() {
     // 1 extra note hash beyond the claimed length.
     builder.previous_kernel.append_note_hashes(2);
     let note_hashes = builder.previous_kernel.note_hashes.storage();
-    builder.previous_kernel.note_hashes = BoundedVec::from_parts_unchecked(note_hashes, 1);
+    builder.previous_kernel.note_hashes = BoundedVec::from_parts(note_hashes, 1);
 
     let _ = builder.execute_with_siloing();
 
@@ -247,7 +294,7 @@ fn extra_nullifiers_beyond_claimed_length() {
     // 1 extra nullifier beyond the claimed length.
     builder.previous_kernel.append_nullifiers(2);
     let nullifiers = builder.previous_kernel.nullifiers.storage();
-    builder.previous_kernel.nullifiers = BoundedVec::from_parts_unchecked(nullifiers, 1);
+    builder.previous_kernel.nullifiers = BoundedVec::from_parts(nullifiers, 1);
 
     let _ = builder.execute_with_siloing();
 
@@ -264,7 +311,7 @@ fn extra_private_logs_beyond_claimed_length() {
     // 1 extra private log beyond the claimed length.
     builder.previous_kernel.append_private_logs(2);
     let private_logs = builder.previous_kernel.private_logs.storage();
-    builder.previous_kernel.private_logs = BoundedVec::from_parts_unchecked(private_logs, 1);
+    builder.previous_kernel.private_logs = BoundedVec::from_parts(private_logs, 1);
 
     let _ = builder.execute_with_siloing();
 
@@ -272,4 +319,28 @@ fn extra_private_logs_beyond_claimed_length() {
     // data validator processes all items within PRIVATE_LOG_SILOING_AMOUNT and expects a siloed log in the output.
     // If the output does contain extra private logs, the validator will still catch it and fail.
     // See the test propagated_private_logs_tests.nr > previous_private_logs_beyond_claimed_length.
+}
+
+// A terminal variant with a zero siloing amount would compile the corresponding siloing pass out of
+// the output validator and bind raw values to the rollup-bound output. `execute_as_terminal` rejects
+// such a variant at compile time; these tests rely on nargo compiling each test as its own program.
+#[test(should_fail_with = "terminal reset must silo note hashes")]
+fn terminal_reset_without_note_hash_siloing_does_not_compile() {
+    let builder = TestBuilder::new();
+    let _ = builder
+        .execute_with_siloing_amounts::<0, NULLIFIER_SILOING_AMOUNT, PRIVATE_LOG_SILOING_AMOUNT>();
+}
+
+#[test(should_fail_with = "terminal reset must silo nullifiers")]
+fn terminal_reset_without_nullifier_siloing_does_not_compile() {
+    let builder = TestBuilder::new();
+    let _ = builder
+        .execute_with_siloing_amounts::<NOTE_HASH_SILOING_AMOUNT, 0, PRIVATE_LOG_SILOING_AMOUNT>();
+}
+
+#[test(should_fail_with = "terminal reset must silo private logs")]
+fn terminal_reset_without_private_log_siloing_does_not_compile() {
+    let builder = TestBuilder::new();
+    let _ = builder
+        .execute_with_siloing_amounts::<NOTE_HASH_SILOING_AMOUNT, NULLIFIER_SILOING_AMOUNT, 0>();
 }

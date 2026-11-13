@@ -171,7 +171,7 @@ export class Barretenberg extends AsyncApi {
    */
   static getSingleton() {
     if (!barretenbergSingleton) {
-      throw new Error('First call Barretenberg.initSingleton() on @aztec/bb.js module.');
+      throw new Error('First call Barretenberg.initSingleton() on @aztec-foundation/bb.js module.');
     }
     return barretenbergSingleton;
   }
@@ -225,8 +225,16 @@ export class BarretenbergSync extends SyncApi {
       barretenbergSyncSingletonPromise = BarretenbergSync.new(options);
     }
 
-    barretenbergSyncSingleton = await barretenbergSyncSingletonPromise;
-    return barretenbergSyncSingleton;
+    try {
+      barretenbergSyncSingleton = await barretenbergSyncSingletonPromise;
+      return barretenbergSyncSingleton;
+    } catch (error) {
+      // Clear the failure so the next call can try again, as the asynchronous singleton does.
+      // Caching it would make one bad spawn permanent for the life of the process.
+      barretenbergSyncSingleton = undefined;
+      barretenbergSyncSingletonPromise = undefined;
+      throw error;
+    }
   }
 
   static destroySingleton() {
@@ -239,7 +247,7 @@ export class BarretenbergSync extends SyncApi {
 
   static getSingleton() {
     if (!barretenbergSyncSingleton) {
-      throw new Error('First call BarretenbergSync.initSingleton() on @aztec/bb.js module.');
+      throw new Error('First call BarretenbergSync.initSingleton() on @aztec-foundation/bb.js module.');
     }
     return barretenbergSyncSingleton;
   }

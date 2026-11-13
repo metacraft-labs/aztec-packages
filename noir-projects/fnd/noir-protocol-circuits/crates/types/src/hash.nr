@@ -127,8 +127,11 @@ pub fn compute_siloed_nullifier(contract_address: AztecAddress, nullifier: Field
 
 pub fn create_protocol_nullifier(tx_request: TxRequest) -> Scoped<Counted<Nullifier>> {
     // The protocol nullifier is ascribed a special side-effect counter of 1. No other side-effect
-    // can have counter 1 (see `validate_as_first_call` for that assertion).
-    Nullifier { value: tx_request.hash(), note_hash: 0 }.count(1).scope(
+    // can have counter 1 (see `validate_as_first_call` for that assertion). Its value is the
+    // transaction's nonce commitment (origin, chain id, version, salt): see
+    // `TxRequest::compute_protocol_nullifier_value`. The reset kernel siloes it under
+    // `NULL_MSG_SENDER_CONTRACT_ADDRESS` like every other nullifier.
+    Nullifier { value: tx_request.compute_protocol_nullifier_value(), note_hash: 0 }.count(1).scope(
         NULL_MSG_SENDER_CONTRACT_ADDRESS,
     )
 }
@@ -243,6 +246,22 @@ pub fn poseidon2_hash_subarray<let N: u32>(input: [Field; N], in_len: u32) -> Fi
     sponge.squeeze()
 }
 
+/// Computes a Poseidon2 hash with a domain separator over a dynamic-length subarray of the given input.
+/// Only the first `in_len` fields of `input` are absorbed; any remaining fields are ignored.
+/// For `in_len == N` this is equivalent to [`poseidon2_hash_with_separator`].
+#[no_predicates]
+pub fn poseidon2_hash_subarray_with_separator<let N: u32, T>(
+    input: [Field; N],
+    in_len: u32,
+    separator: T,
+) -> Field
+where
+    T: ToField,
+{
+    let inputs_with_separator = [separator.to_field()].concat(input);
+    poseidon::poseidon2::Poseidon2::hash(inputs_with_separator, in_len + 1)
+}
+
 // This function is  unconstrained because it is intended to be used in unconstrained context only as
 // in constrained contexts it would be too inefficient.
 pub unconstrained fn poseidon2_hash_with_separator_bounded_vec<let N: u32, T>(
@@ -264,6 +283,15 @@ where
     sponge.squeeze()
 }
 
+/// Computes a Poseidon2 hash of a fixed string, such as a function signature or a domain separator name.
+///
+/// The bytes are packed into 31-byte little-endian chunks, one `Field` per chunk, and the result is
+/// [`poseidon2_hash`] of those fields.
+///
+/// The hash commits to the number of chunks but not to the byte length `N`: zero bytes at the end of the last chunk
+/// do not change the result, so `[1]`, `[1, 0]` and `[1, 0, ..., 0]` (31 bytes) all hash to the same value. Do not
+/// use this to commit to variable-length data, e.g. a payload zero-padded to a maximum length, unless the length is
+/// bound separately.
 #[no_predicates]
 pub fn poseidon2_hash_bytes<let N: u32>(inputs: [u8; N]) -> Field {
     let mut fields = [0; (N + 30) / 31];
@@ -282,6 +310,32 @@ pub fn poseidon2_hash_bytes<let N: u32>(inputs: [u8; N]) -> Field {
         fields[field_index] = field_from_bytes(current_field, false);
     }
     poseidon2_hash(fields)
+}
+
+#[test]
+fn poseidon2_hash_bytes_matches_hash_of_packed_chunks() {
+    let mut bytes = [0; 32];
+    bytes[0] = 1;
+    bytes[1] = 2;
+    bytes[31] = 3;
+
+    assert_eq(poseidon2_hash_bytes(bytes), poseidon2_hash([1 + 2 * 256, 3]));
+}
+
+#[test]
+fn poseidon2_hash_bytes_ignores_trailing_zeros_in_last_chunk() {
+    let hash = poseidon2_hash_bytes([1]);
+
+    assert_eq(poseidon2_hash_bytes([1, 0]), hash);
+    assert_eq(poseidon2_hash_bytes([1].concat([0; 30])), hash);
+}
+
+#[test]
+fn poseidon2_hash_bytes_commits_to_chunk_count() {
+    let one_chunk: [u8; 31] = [1].concat([0; 30]);
+    let two_chunks: [u8; 32] = [1].concat([0; 31]);
+
+    assert(poseidon2_hash_bytes(one_chunk) != poseidon2_hash_bytes(two_chunks));
 }
 
 #[test]
@@ -306,6 +360,23 @@ fn subarray_hash_matches_variable() {
     let variable_len_hash = poseidon::poseidon2::Poseidon2::hash(padded, values_to_hash.len());
 
     assert_eq(subarray_hash, variable_len_hash);
+}
+
+#[test]
+fn subarray_hash_with_separator_matches_fixed_len_with_separator() {
+    let values_to_hash = [3; 17];
+    let padded = values_to_hash.concat([0; 11]);
+    let separator = 42;
+
+    assert_eq(
+        poseidon2_hash_subarray_with_separator(padded, values_to_hash.len(), separator),
+        poseidon2_hash_with_separator(values_to_hash, separator),
+    );
+    // Hashing the whole array must differ from hashing a prefix of it, even though the padding is zero.
+    assert(
+        poseidon2_hash_subarray_with_separator(padded, padded.len(), separator)
+            != poseidon2_hash_subarray_with_separator(padded, values_to_hash.len(), separator),
+    );
 }
 
 #[test]

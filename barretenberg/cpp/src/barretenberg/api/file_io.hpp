@@ -15,6 +15,13 @@
 #include <unistd.h>
 #include <vector>
 
+// On Windows the CRT opens descriptors in text mode unless O_BINARY is passed: reads stop at the
+// first 0x1A and writes expand 0x0A into 0x0D 0x0A. Other platforms have no text mode and no
+// O_BINARY, so define it as a no-op there.
+#ifndef _WIN32
+#define O_BINARY 0
+#endif
+
 namespace bb {
 inline size_t get_file_size(std::string const& filename)
 {
@@ -66,7 +73,7 @@ inline std::vector<uint8_t> read_file(const std::string& filename, size_t bytes 
     auto raw_size = std::filesystem::file_size(filename, ec);
     std::optional<size_t> file_size = ec ? std::nullopt : std::optional<size_t>(static_cast<size_t>(raw_size));
 
-    int fd = open(filename.c_str(), O_RDONLY);
+    int fd = open(filename.c_str(), O_RDONLY | O_BINARY);
     if (fd == -1) {
         THROW std::runtime_error("Unable to open file: " + filename + " (" + strerror(errno) + ")");
     }
@@ -82,7 +89,8 @@ inline std::vector<uint8_t> read_file(const std::string& filename, size_t bytes 
         fileData.resize(to_read);
         size_t total = 0;
         while (total < to_read) {
-            ssize_t got = ::read(fd, fileData.data() + total, static_cast<unsigned int>(to_read - total));
+            ssize_t got = ::read(
+                fd, fileData.data() + total, static_cast<unsigned int>(std::min<size_t>(to_read - total, INT_MAX)));
             if (got < 0) {
                 close(fd);
                 THROW std::runtime_error("Failed to read file: " + filename + " (" + strerror(errno) + ")");
@@ -103,7 +111,7 @@ inline void write_file(const std::string& filename, std::span<const uint8_t> dat
     // For regular files, truncate and create if missing (O_TRUNC | O_CREAT).
     // For FIFOs/pipes the file already exists and O_CREAT/O_TRUNC are no-ops, so
     // the same flags work uniformly for both cases — no need to stat() first.
-    int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
     if (fd == -1) {
         THROW std::runtime_error("Failed to open file for writing: " + filename + " (" + strerror(errno) + ")");
     }
@@ -111,8 +119,9 @@ inline void write_file(const std::string& filename, std::span<const uint8_t> dat
     // Loop to handle short writes (required by POSIX, common on pipes and sockets).
     size_t total_written = 0;
     while (total_written < data.size()) {
-        ssize_t written =
-            ::write(fd, data.data() + total_written, static_cast<unsigned int>(data.size() - total_written));
+        ssize_t written = ::write(fd,
+                                  data.data() + total_written,
+                                  static_cast<unsigned int>(std::min<size_t>(data.size() - total_written, INT_MAX)));
         if (written < 0) {
             close(fd);
             THROW std::runtime_error("Failed to write to file: " + filename + " (" + strerror(errno) + ")");
@@ -149,8 +158,8 @@ inline std::vector<uint8_t> read_vk_file(const std::filesystem::path& vk_path)
         return read_file(vk_path.string());
     } catch (const std::runtime_error&) {
         THROW std::runtime_error("Unable to open file: " + vk_path.string() +
-                                 "\nGenerate a vk during proving by running `bb prove` with an additional `--write_vk` "
-                                 "flag, or run `bb write_vk` to generate a standalone vk."
+                                 "\nRun `bb write_vk` to generate a vk. For UltraHonk, you can also generate it during "
+                                 "proving with `bb prove --write_vk`."
                                  "\nIf you already have a vk file, specify its path with `--vk_path <path>`.");
     }
 }

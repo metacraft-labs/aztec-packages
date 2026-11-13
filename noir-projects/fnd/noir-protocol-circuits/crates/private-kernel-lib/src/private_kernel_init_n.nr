@@ -52,12 +52,13 @@ pub fn execute<let N: u32>(
     PrivateCallDataValidator::new(inputs.private_calls[0]).validate_as_first_call(
         inputs.tx_request,
         inputs.protocol_contracts,
+        inputs.is_private_only,
         inputs.revertible_counter_hint,
     );
 
     let constants_for_apps = PrivateTxConstantData {
         tx_context: inputs.private_calls[0].public_inputs.tx_context,
-        tx_request_salt: inputs.private_calls[0].public_inputs.tx_request_salt,
+        protocol_nullifier: inputs.private_calls[0].public_inputs.protocol_nullifier,
         vk_tree_root: inputs.vk_tree_root,
         protocol_contracts: inputs.protocol_contracts,
         anchor_block_header: inputs.private_calls[0].public_inputs.anchor_block_header,

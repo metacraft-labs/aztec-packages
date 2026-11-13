@@ -8,7 +8,7 @@ use crate::{
         DOM_SEP__BLOB_GAMMA_ACC, DOM_SEP__BLOB_GAMMA_FINAL, DOM_SEP__BLOB_HASHED_Y_LIMBS,
         DOM_SEP__BLOB_Z_ACC, DOM_SEP__BLOCK_HEADER_HASH, DOM_SEP__BLOCK_HEADERS_HASH,
         DOM_SEP__CONSTRAINED_MSG_LOG_TAG, DOM_SEP__CONSTRAINED_MSG_SENDER_SECRET,
-        DOM_SEP__CONTRACT_ADDRESS_V2, DOM_SEP__CONTRACT_CLASS_ID, DOM_SEP__EVENT_COMMITMENT,
+        DOM_SEP__CONTRACT_ADDRESS_V3, DOM_SEP__CONTRACT_CLASS_ID, DOM_SEP__EVENT_COMMITMENT,
         DOM_SEP__EVENT_LOG_TAG, DOM_SEP__FBSK_M, DOM_SEP__FUNCTION_ARGS,
         DOM_SEP__HANDSHAKE_FORGERY_PROTECTION, DOM_SEP__INBOX_ROLLING_HASH, DOM_SEP__INITIALIZER,
         DOM_SEP__INTERACTIVE_HANDSHAKE_SIGNATURE, DOM_SEP__IVSK_M, DOM_SEP__MERKLE_HASH,
@@ -18,14 +18,15 @@ use crate::{
         DOM_SEP__PARTIAL_ADDRESS, DOM_SEP__PARTIAL_NOTE_VALIDITY_COMMITMENT,
         DOM_SEP__PRIVATE_FUNCTION_LEAF, DOM_SEP__PRIVATE_INITIALIZATION_NULLIFIER,
         DOM_SEP__PRIVATE_LOG_FIRST_FIELD, DOM_SEP__PRIVATE_TX_HASH, DOM_SEP__PROTOCOL_CONTRACTS,
-        DOM_SEP__PUBLIC_BYTECODE, DOM_SEP__PUBLIC_CALLDATA, DOM_SEP__PUBLIC_DATA_MERKLE,
-        DOM_SEP__PUBLIC_INITIALIZATION_NULLIFIER, DOM_SEP__PUBLIC_KEYS_HASH,
-        DOM_SEP__PUBLIC_LEAF_SLOT, DOM_SEP__PUBLIC_STORAGE_MAP_SLOT, DOM_SEP__PUBLIC_TX_HASH,
-        DOM_SEP__RETRIEVED_BYTECODES_MERKLE, DOM_SEP__SALTED_INITIALIZATION_HASH,
-        DOM_SEP__SECRET_HASH, DOM_SEP__SIGNATURE_PAYLOAD, DOM_SEP__SILOED_NOTE_HASH,
-        DOM_SEP__SILOED_NULLIFIER, DOM_SEP__SINGLE_PUBLIC_KEY_HASH, DOM_SEP__TSK_M,
-        DOM_SEP__TX_REQUEST, DOM_SEP__UNCONSTRAINED_MSG_LOG_TAG, DOM_SEP__UNIQUE_NOTE_HASH,
-        DOM_SEP__WRITTEN_SLOTS_MERKLE, NULL_MSG_SENDER_CONTRACT_ADDRESS,
+        DOM_SEP__PROTOCOL_NULLIFIER, DOM_SEP__PUBLIC_BYTECODE, DOM_SEP__PUBLIC_CALLDATA,
+        DOM_SEP__PUBLIC_DATA_MERKLE, DOM_SEP__PUBLIC_INITIALIZATION_NULLIFIER,
+        DOM_SEP__PUBLIC_KEYS_HASH, DOM_SEP__PUBLIC_LEAF_SLOT, DOM_SEP__PUBLIC_STORAGE_MAP_SLOT,
+        DOM_SEP__PUBLIC_TX_HASH, DOM_SEP__RETRIEVED_BYTECODES_MERKLE,
+        DOM_SEP__SALTED_INITIALIZATION_HASH, DOM_SEP__SECRET_HASH, DOM_SEP__SIGNATURE_PAYLOAD,
+        DOM_SEP__SILOED_NOTE_HASH, DOM_SEP__SILOED_NULLIFIER, DOM_SEP__SINGLE_PUBLIC_KEY_HASH,
+        DOM_SEP__TSK_M, DOM_SEP__TX_EFFECT_CATEGORIES_HASH, DOM_SEP__TX_EFFECT_CATEGORY_HASH,
+        DOM_SEP__TX_EFFECTS_TREE, DOM_SEP__TX_EFFECTS_TREE_LEAF, DOM_SEP__UNCONSTRAINED_MSG_LOG_TAG,
+        DOM_SEP__UNIQUE_NOTE_HASH, DOM_SEP__WRITTEN_SLOTS_MERKLE, NULL_MSG_SENDER_CONTRACT_ADDRESS,
         SIDE_EFFECT_MASKING_ADDRESS, TX_START_PREFIX,
     },
     hash::poseidon2_hash_bytes,
@@ -140,7 +141,7 @@ impl<let NUM_VALUES: u32, let NUM_U32_VALUES: u32> HashedValueTester<NUM_VALUES,
 
 #[test]
 fn hashed_values_match_derived() {
-    let mut tester = HashedValueTester::<68, 63>::new();
+    let mut tester = HashedValueTester::<72, 67>::new();
 
     // -----------------
     // Domain separators
@@ -203,11 +204,21 @@ fn hashed_values_match_derived() {
     tester.assert_dom_sep_matches_derived(DOM_SEP__PUBLIC_KEYS_HASH, "public_keys_hash");
     tester.assert_dom_sep_matches_derived(DOM_SEP__SINGLE_PUBLIC_KEY_HASH, "single_public_key_hash");
     tester.assert_dom_sep_matches_derived(DOM_SEP__PARTIAL_ADDRESS, "partial_address");
-    tester.assert_dom_sep_matches_derived(DOM_SEP__CONTRACT_ADDRESS_V2, "contract_address_v2");
+    tester.assert_dom_sep_matches_derived(DOM_SEP__CONTRACT_ADDRESS_V3, "contract_address_v3");
     tester.assert_dom_sep_matches_derived(DOM_SEP__BLOCK_HEADER_HASH, "block_header_hash");
-    tester.assert_dom_sep_matches_derived(DOM_SEP__TX_REQUEST, "tx_request");
+    tester.assert_dom_sep_matches_derived(DOM_SEP__PROTOCOL_NULLIFIER, "protocol_nullifier");
     tester.assert_dom_sep_matches_derived(DOM_SEP__PUBLIC_TX_HASH, "public_tx_hash");
     tester.assert_dom_sep_matches_derived(DOM_SEP__PRIVATE_TX_HASH, "private_tx_hash");
+    tester.assert_dom_sep_matches_derived(
+        DOM_SEP__TX_EFFECT_CATEGORY_HASH,
+        "tx_effect_category_hash",
+    );
+    tester.assert_dom_sep_matches_derived(
+        DOM_SEP__TX_EFFECT_CATEGORIES_HASH,
+        "tx_effect_categories_hash",
+    );
+    tester.assert_dom_sep_matches_derived(DOM_SEP__TX_EFFECTS_TREE_LEAF, "tx_effects_tree_leaf");
+    tester.assert_dom_sep_matches_derived(DOM_SEP__TX_EFFECTS_TREE, "tx_effects_tree");
     tester.assert_dom_sep_matches_derived(DOM_SEP__PUBLIC_CALLDATA, "public_calldata");
     tester.assert_dom_sep_matches_derived(DOM_SEP__FUNCTION_ARGS, "function_args");
     tester.assert_dom_sep_matches_derived(DOM_SEP__PROTOCOL_CONTRACTS, "protocol_contracts");

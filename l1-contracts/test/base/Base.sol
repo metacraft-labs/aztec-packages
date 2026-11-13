@@ -5,14 +5,9 @@ import {Timestamp, Slot, Epoch} from "@aztec/core/libraries/TimeLib.sol";
 import {Test} from "forge-std/Test.sol";
 import {stdStorage, StdStorage} from "forge-std/Test.sol";
 import {AttesterView, Exit, Status, AttesterConfig} from "@aztec/core/libraries/rollup/StakingLib.sol";
-import {AppendOnlyTreeSnapshot} from "@aztec/core/libraries/rollup/ProposedHeaderLib.sol";
 
 contract TestBase is Test {
   using stdStorage for StdStorage;
-
-  // Empty values
-  AppendOnlyTreeSnapshot EMPTY_APPENDONLY_TREE_SNAPSHOT =
-    AppendOnlyTreeSnapshot({root: bytes32(0), nextAvailableLeafIndex: 0});
 
   modifier skipWhenCoverage() {
     if (isCoverage()) {
@@ -23,6 +18,17 @@ contract TestBase is Test {
 
   function isCoverage() internal view returns (bool) {
     return vm.envOr("FORGE_COVERAGE", false);
+  }
+
+  modifier skipWhenGasReport() {
+    if (isGasReport()) {
+      vm.skip(true);
+    }
+    _;
+  }
+
+  function isGasReport() internal view returns (bool) {
+    return vm.envOr("FORGE_GAS_REPORT", false);
   }
 
   function assertGt(Timestamp a, Timestamp b) internal {
@@ -275,6 +281,22 @@ contract TestBase is Test {
   }
 
   // Blobs
+
+  /**
+   * @notice Sets the blob hashes seen by the next call, or bypasses the rollup's blob check if it cannot.
+   * @dev Gas reports run every top level call in its own transaction, and `vm.blobhashes` does not survive
+   *      that isolation (foundry-rs/foundry#10074): the isolated transaction reverts before it reaches the
+   *      callee. Clearing `checkBlob` instead keeps such calls executable while a gas report is being taken.
+   * @param rollup The rollup whose blob check may be bypassed
+   * @param blobHashes The blob hashes to expose to the next call
+   */
+  function setBlobHashesOrSkipCheck(address rollup, bytes32[] memory blobHashes) internal {
+    if (isGasReport()) {
+      skipBlobCheck(rollup);
+    } else {
+      vm.blobhashes(blobHashes);
+    }
+  }
 
   function skipBlobCheck(address rollup) internal {
     // For not entirely clear reasons, the checked_write and find in stdStore breaks with

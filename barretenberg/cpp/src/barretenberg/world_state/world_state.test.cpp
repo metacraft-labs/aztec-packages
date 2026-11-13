@@ -6,6 +6,7 @@
 #include "barretenberg/crypto/merkle_tree/response.hpp"
 #include "barretenberg/ecc/curves/bn254/fr.hpp"
 #include "barretenberg/world_state/fork.hpp"
+#include "barretenberg/world_state/genesis_protocol_nullifiers.hpp"
 #include "barretenberg/world_state/types.hpp"
 #include <array>
 #include <cstdint>
@@ -168,13 +169,26 @@ void assert_fork_state_unchanged(const WorldState& ws,
 
 TEST_F(WorldStateTest, GetInitialTreeInfoForAllTrees)
 {
-    WorldState ws(thread_pool_size, data_dir, map_size, tree_heights, tree_prefill, initial_header_generator_point);
+    // The canonical genesis of a production network: the protocol contracts' registration nullifiers seeded into an
+    // otherwise empty world state. These leaves determine the GENESIS_* constants asserted below, so the header and
+    // the constants are regenerated together.
+    std::vector<bb::fr> prefilled_nullifiers = genesis_protocol_nullifiers();
+    WorldState ws(thread_pool_size,
+                  data_dir,
+                  map_size,
+                  tree_heights,
+                  tree_prefill,
+                  std::vector<PublicDataLeafValue>(),
+                  prefilled_nullifiers,
+                  initial_header_generator_point);
 
     {
         auto info = ws.get_tree_info(WorldStateRevision::committed(), MerkleTreeId::NULLIFIER_TREE);
+        // The prefilled nullifiers replace padding leaves inside the 128-leaf initial prefill region rather than being
+        // appended, so the tree size stays 128 while the root reflects the seeded values.
         EXPECT_EQ(info.meta.size, 128);
         EXPECT_EQ(info.meta.depth, tree_heights.at(MerkleTreeId::NULLIFIER_TREE));
-        EXPECT_EQ(info.meta.root, bb::fr("0x18935581a8ed73d08ffd00386fba55ba6c89f3ab848a76b8fedfa9034cee0454"));
+        EXPECT_EQ(info.meta.root, bb::fr(GENESIS_NULLIFIER_TREE_ROOT));
     }
 
     {

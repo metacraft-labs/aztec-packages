@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - 'merge-train/**'
-      - 'backport-to-*-staging'
-      - 'port-to-next-staging'
 
 jobs:
   update-pr-body:

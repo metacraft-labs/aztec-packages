@@ -174,6 +174,11 @@ contract RollupBuilder is Test {
     return this;
   }
 
+  function setLagInEpochsForRandao(uint256 _lagInEpochsForRandao) public returns (RollupBuilder) {
+    config.rollupConfigInput.lagInEpochsForRandao = _lagInEpochsForRandao;
+    return this;
+  }
+
   function setProofSubmissionEpochs(uint256 _proofSubmissionEpochs) public returns (RollupBuilder) {
     config.rollupConfigInput.aztecProofSubmissionEpochs = _proofSubmissionEpochs;
     return this;
@@ -231,6 +236,11 @@ contract RollupBuilder is Test {
 
   function setLocalEjectionThreshold(uint256 _localEjectionThreshold) public returns (RollupBuilder) {
     config.rollupConfigInput.localEjectionThreshold = _localEjectionThreshold;
+    return this;
+  }
+
+  function setSequencerRewardCalculator(address _calculator) public returns (RollupBuilder) {
+    config.rollupConfigInput.sequencerRewardCalculator = _calculator;
     return this;
   }
 

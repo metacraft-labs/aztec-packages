@@ -62,7 +62,9 @@ pub global NOTE_HASH_SUBTREE_ROOT_SIBLING_PATH_LENGTH: u32 =
 pub global NULLIFIER_SUBTREE_ROOT_SIBLING_PATH_LENGTH: u32 =
     NULLIFIER_TREE_HEIGHT - NULLIFIER_SUBTREE_HEIGHT;
 // Cap on L1-to-L2 messages bundled into a single L2 block. One quarter of the per-checkpoint
-// cap: a checkpoint drains its Inbox consumption across up to four message-bearing blocks.
+// cap, so four blocks at full bundles are the fewest that can drain a checkpoint's whole Inbox
+// allowance. It is a floor, not a ceiling: blocks end at arbitrary message prefixes, so a
+// checkpoint may spread the same allowance over any number of partially filled blocks.
 pub global MAX_L1_TO_L2_MSGS_PER_BLOCK: u32 = 256;
 // Cap on L1-to-L2 messages consumed by a single checkpoint.
 pub global MAX_L1_TO_L2_MSGS_PER_CHECKPOINT: u32 = 1024;
@@ -148,10 +150,13 @@ pub global PRIVATE_KERNEL_INNER_4_VK_INDEX: u32 = 71;
 pub global PRIVATE_KERNEL_INNER_5_VK_INDEX: u32 = 72;
 // VK index 73 is intentionally unallocated: it was the message-only block root, merged into the no-txs block root.
 // The InboxParity size ladder: one VK per size, checked as an allowed set by the checkpoint root. Appended here
-// (rather than reusing the freed 21/22) so the three sizes stay contiguous and read in order.
+// (rather than reusing the freed 21/22) so the ladder stays clear of the reset range. Indices are allocated in the
+// order the rungs were added, not in size order: 4 and 16 joined the ladder after the original three.
 pub global INBOX_PARITY_64_VK_INDEX: u32 = 74;
 pub global INBOX_PARITY_256_VK_INDEX: u32 = 75;
 pub global INBOX_PARITY_1024_VK_INDEX: u32 = 76;
+pub global INBOX_PARITY_4_VK_INDEX: u32 = 77;
+pub global INBOX_PARITY_16_VK_INDEX: u32 = 78;
 
 // Maximum number of apps absorbed by a single private kernel iteration.
 pub global MAX_APPS_PER_KERNEL: u32 = 5;
@@ -195,11 +200,15 @@ pub global MAX_CHECKPOINTS_PER_EPOCH: u32 = 32;
 // the production slot length.
 pub global MAX_BLOCKS_PER_CHECKPOINT: u32 = 72;
 pub global MAX_TX_LIFETIME: u64 = 86400; // 1 day. Arbitrarily chosen.
-// The genesis values are taken from world_state.test.cpp > WorldStateTest.GetInitialTreeInfoForAllTrees
+// The canonical genesis: an empty world state seeded with the protocol contracts' registration nullifiers, no
+// prefunded public data and timestamp 0. Measured from a real world state and rewritten together by
+// `noir-projects/fnd/scripts/regenerate_genesis_constants.sh`; never edit one of them by hand.
+pub global GENESIS_NULLIFIER_TREE_ROOT: Field =
+    0x15c67f4d7495a669ed57c5a9468533c63ace43f86b787c52edabefec85e4afc0;
 pub global GENESIS_BLOCK_HEADER_HASH: Field =
-    0x0e7bf88e8833c27b0fca6be614ecc2c63def7bffa35b3ccfa1caff3e39e0c0d2;
+    0x199b52350e8f18eeb9cd455fd074bc6fa62ea6a8e3253e2c663aa4909bbd5718;
 pub global GENESIS_ARCHIVE_ROOT: Field =
-    0x177a4955b31ecaafad999753938a44e526b54c5ba5d536688227f85f15cfbdf5;
+    0x29eb2c527f8d45276430363214e6c8d709ef3f657a3670ebac3179373d41e5c4;
 pub global EMPTY_EPOCH_OUT_HASH: Field =
     0xc95e0ceb41951039e1592745ec2faea9866f6eaf01bf189a4463b4143af093;
 
@@ -411,6 +420,7 @@ pub global TOTAL_MANA_USED_LENGTH: u32 = 1;
 pub global BLOCK_HEADER_LENGTH: u32 = APPEND_ONLY_TREE_SNAPSHOT_LENGTH
     + STATE_REFERENCE_LENGTH
     + 1 /* blob_sponge_hash */
+    + 1 /* tx_effects_tree_root */
     + GLOBAL_VARIABLES_LENGTH
     + TOTAL_FEES_LENGTH
     + TOTAL_MANA_USED_LENGTH;
@@ -457,12 +467,12 @@ pub global PRIVATE_CIRCUIT_PUBLIC_INPUTS_LENGTH: u32 = CALL_CONTEXT_LENGTH
     + (COUNTED_LOG_HASH_LENGTH * MAX_CONTRACT_CLASS_LOGS_PER_CALL + 1)
     + BLOCK_HEADER_LENGTH
     + TX_CONTEXT_LENGTH
-    + 1 /* tx_request_salt */;
+    + 1 /* protocol_nullifier */;
 pub global PRIVATE_CONTEXT_INPUTS_LENGTH: u32 = CALL_CONTEXT_LENGTH
     + BLOCK_HEADER_LENGTH
     + TX_CONTEXT_LENGTH
     + 1 /* start_side_effect_counter */
-    + 1 /* tx_request_salt */;
+    + 1 /* protocol_nullifier */;
 pub global FEE_RECIPIENT_LENGTH: u32 = 2;
 
 // TODO: Leila's considering moving this into a noir file within bb
@@ -568,6 +578,7 @@ pub global TX_ROLLUP_PUBLIC_INPUTS_LENGTH: u32 = BLOCK_CONSTANT_DATA_LENGTH
     + SPONGE_BLOB_LENGTH /* end_sponge_blob */
     + 1 /* num_txs */
     + 1 /* out_hash */
+    + 1 /* tx_effects_tree_root */
     + 1 /* accumulated_fees */
     + 1 /* accumulated_mana_used */;
 pub global BLOCK_ROLLUP_PUBLIC_INPUTS_LENGTH: u32 = CHECKPOINT_CONSTANT_DATA_LENGTH
@@ -605,6 +616,8 @@ pub global ROOT_ROLLUP_PUBLIC_INPUTS_LENGTH: u32 = 1 /* previous_archive_root */
 
 // The InboxParity size ladder: one variable-size parity proof is produced per checkpoint, and the prover picks the
 // smallest size >= the checkpoint's real message count. The largest rung equals the per-checkpoint message cap.
+pub global INBOX_PARITY_SIZE_XXSMALL: u32 = 4;
+pub global INBOX_PARITY_SIZE_XSMALL: u32 = 16;
 pub global INBOX_PARITY_SIZE_SMALL: u32 = 64;
 pub global INBOX_PARITY_SIZE_MEDIUM: u32 = 256;
 pub global INBOX_PARITY_SIZE_LARGE: u32 = 1024;
@@ -756,15 +769,31 @@ pub global DOM_SEP__SINGLE_PUBLIC_KEY_HASH: u32 = 3452068255;
 // Address
 pub global DOM_SEP__PARTIAL_ADDRESS: u32 = 2103633018;
 
-pub global DOM_SEP__CONTRACT_ADDRESS_V2: u32 = 4099338721;
+pub global DOM_SEP__CONTRACT_ADDRESS_V3: u32 = 993442748;
 
 // ---------------------------------------------------------------
 
 pub global DOM_SEP__BLOCK_HEADER_HASH: u32 = 4195546849;
 
-pub global DOM_SEP__TX_REQUEST: u32 = 3763737512;
+/// Domain separator for the unsiloed protocol nullifier (`TxRequest::compute_protocol_nullifier_value`).
+pub global DOM_SEP__PROTOCOL_NULLIFIER: u32 = 4023616154;
 pub global DOM_SEP__PUBLIC_TX_HASH: u32 = 1630108851;
 pub global DOM_SEP__PRIVATE_TX_HASH: u32 = 1971680439;
+
+/// The number of variable-length effect categories committed by a tx effects tree leaf.
+pub global NUM_TX_EFFECT_CATEGORIES: u32 = 7;
+/// The tx start marker, transaction fee, and one hash per effect category.
+pub global TX_EFFECT_CATEGORIES_HASH_PREIMAGE_LENGTH: u32 = 2 + NUM_TX_EFFECT_CATEGORIES;
+
+/// Domain separator shared by the effect category hashes, which occupy fixed positions in the categories hash.
+pub global DOM_SEP__TX_EFFECT_CATEGORY_HASH: u32 = 1030022731;
+/// Domain separator for the hash over the tx start marker, transaction fee, and effect category hashes.
+pub global DOM_SEP__TX_EFFECT_CATEGORIES_HASH: u32 = 1426387399;
+/// Domain separator for a tx effects tree leaf, which binds a tx hash to its categories hash.
+pub global DOM_SEP__TX_EFFECTS_TREE_LEAF: u32 = 1186802524;
+/// Domain separator for the internal nodes of the tx effects tree. Distinct from
+/// [`DOM_SEP__TX_EFFECTS_TREE_LEAF`] so that a leaf can never be confused with an internal node.
+pub global DOM_SEP__TX_EFFECTS_TREE: u32 = 2908237871;
 
 // Hashing the calldata of public functions:
 pub global DOM_SEP__PUBLIC_CALLDATA: u32 = 2760353947;

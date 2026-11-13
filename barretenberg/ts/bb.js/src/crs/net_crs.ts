@@ -15,14 +15,21 @@ export async function fetchWithFallback(
   options: RequestInit,
 ): Promise<Response> {
   try {
-    const response = await fetch(primaryUrl, options);
-    if (response.ok || response.status === 206) {
-      return response;
-    }
-    throw new Error(`HTTP ${response.status}`);
+    return await fetchOk(primaryUrl, options);
   } catch {
-    return await fetch(fallbackUrl, options);
+    return await fetchOk(fallbackUrl, options);
   }
+}
+
+async function fetchOk(url: string, options: RequestInit): Promise<Response> {
+  const response = await fetch(url, options);
+  if (response.ok || response.status === 206) {
+    if (!response.body) {
+      throw new Error(`Empty response body from ${url}`);
+    }
+    return response;
+  }
+  throw new Error(`HTTP ${response.status} from ${url}`);
 }
 
 /**

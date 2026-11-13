@@ -26,9 +26,9 @@ use types::{
         L1_TO_L2_MSG_SUBTREE_HEIGHT, L1_TO_L2_MSG_TREE_HEIGHT, MAX_CHECKPOINTS_PER_EPOCH,
         MAX_L1_TO_L2_MSGS_PER_BLOCK, OUT_HASH_TREE_HEIGHT, OUT_HASH_TREE_LEAF_COUNT,
     },
-    hash::{poseidon2_hash, poseidon2_hash_with_separator},
+    hash::poseidon2_hash_with_separator,
     merkle_tree::{
-        append_only_tree::append_leaves_to_snapshot, compute_empty_tree_root, MerkleTree,
+        append_only_tree::append_leaves_to_snapshot, MerkleTree,
         test_utils::SingleSubtreeMerkleTree,
     },
     proof::proof_data::{AvmV2ProofData, ProofData},
@@ -137,52 +137,6 @@ impl RollupFixtureBuilder {
         let sibling_path_for_insertion = tree.get_sibling_path(block_number as Field);
 
         (previous_snapshot, sibling_path_for_insertion)
-    }
-
-    pub fn build_l1_to_l2_message_subtree_for_insertion(
-        self,
-        slot_number: Field,
-    ) -> (AppendOnlyTreeSnapshot, [Field; L1_TO_L2_MSG_TREE_HEIGHT - L1_TO_L2_MSG_SUBTREE_HEIGHT], AppendOnlyTreeSnapshot) {
-        // Create a subtree of size 4 filled with subtree roots before the current slot.
-        let new_slot_index = self.get_l1_to_l2_message_next_available_leaf_index(slot_number - 1)
-             as u32
-            >> L1_TO_L2_MSG_SUBTREE_HEIGHT;
-        let start_slot_index = new_slot_index - new_slot_index % 4;
-        let mut subtree_roots = [0; 4];
-        for i in start_slot_index..new_slot_index {
-            subtree_roots[i % 4] =
-                self.get_l1_to_l2_message_subtree_root(slot_number - 4 + i as Field);
-        }
-        let empty_subtree_root = compute_empty_tree_root::<L1_TO_L2_MSG_SUBTREE_HEIGHT>();
-        subtree_roots[new_slot_index % 4] = empty_subtree_root;
-
-        let mut tree = SingleSubtreeMerkleTree::<4, 2, L1_TO_L2_MSG_TREE_HEIGHT - L1_TO_L2_MSG_SUBTREE_HEIGHT>::new_tree_roots_at_index::<L1_TO_L2_MSG_SUBTREE_HEIGHT>(
-            subtree_roots,
-            start_slot_index as Field,
-        );
-        let previous_snapshot = AppendOnlyTreeSnapshot {
-            root: tree.get_root(),
-            next_available_leaf_index: self.get_l1_to_l2_message_next_available_leaf_index(
-                slot_number - 1,
-            ),
-        };
-
-        // Get the sibling path for inserting the current l1-to-l2 messages.
-        let sibling_path_for_insertion = tree.get_sibling_path(new_slot_index as Field);
-
-        // Insert subtree of the current l1-to-l2 messages.
-        tree.update_leaf(
-            new_slot_index as Field,
-            self.get_l1_to_l2_message_subtree_root(slot_number),
-        );
-        let new_snapshot = AppendOnlyTreeSnapshot {
-            root: tree.get_root(),
-            next_available_leaf_index: self.get_l1_to_l2_message_next_available_leaf_index(
-                slot_number,
-            ),
-        };
-
-        (previous_snapshot, sibling_path_for_insertion, new_snapshot)
     }
 
     /// Builds a per-block L1-to-L2 message bundle appended to an empty tree, returning
@@ -316,6 +270,7 @@ impl RollupFixtureBuilder {
             last_archive: self.get_archive(block_number - 1),
             state: self.get_state_reference(block_number),
             sponge_blob_hash: block_number as Field * 9439783,
+            tx_effects_tree_root: self.get_tx_effects_tree_root(block_number),
             global_variables: self.get_global_variables(block_number),
             total_fees: self.get_fee(block_number),
             total_mana_used: self.get_mana_used(block_number),
@@ -363,6 +318,7 @@ impl RollupFixtureBuilder {
             start_sponge_blob: self.get_sponge_blob(start_tx_index as u32 - 1),
             end_sponge_blob: self.get_sponge_blob(end_tx_index as u32),
             out_hash: self.get_out_hash(end_tx_index as u32),
+            accumulated_tx_effects_tree_root: self.get_tx_effects_tree_root(end_tx_index as u32),
             accumulated_fees: self.get_fee(end_tx_index as u32),
             accumulated_mana_used: self.get_mana_used(end_tx_index as u32),
         }
@@ -541,6 +497,10 @@ impl RollupFixtureBuilder {
         tx_or_block_or_slot_number as Field * 60415
     }
 
+    fn get_tx_effects_tree_root(_self: Self, tx_or_block_number: u32) -> Field {
+        tx_or_block_number as Field * 51239
+    }
+
     fn get_inbox_rolling_hash(_self: Self, slot_number: Field) -> Field {
         slot_number * 917231
     }
@@ -586,10 +546,6 @@ impl RollupFixtureBuilder {
             nullifier_tree: self.make_fixture(self.start_slot_number, tx_or_block_number, 4783),
             public_data_tree: self.make_fixture(self.start_slot_number, tx_or_block_number, 19342),
         }
-    }
-
-    fn get_l1_to_l2_message_subtree_root(_self: Self, slot_number: Field) -> Field {
-        slot_number * 7639901
     }
 
     fn get_l1_to_l2_message_next_available_leaf_index(_self: Self, slot_number: Field) -> Field {

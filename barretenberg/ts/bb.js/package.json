@@ -1,5 +1,5 @@
 {
-  "name": "@aztec/bb.js",
+  "name": "@aztec-foundation/bb.js",
   "packageManager": "yarn@4.13.0",
   "version": "0.1.0",
   "homepage": "https://github.com/AztecProtocol/aztec-packages/tree/master/barretenberg/ts/bb.js",
@@ -75,6 +75,7 @@
     "idb-keyval": "^6.2.1",
     "msgpackr": "^1.11.2",
     "pako": "^2.1.0",
+    "proper-lockfile": "^4.1.2",
     "tslib": "^2.4.0"
   },
   "devDependencies": {
@@ -86,6 +87,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^22.15.17",
     "@types/pako": "^2.0.3",
+    "@types/proper-lockfile": "^4.1.4",
     "@types/source-map-support": "^0.5.6",
     "@typescript/native-preview": "7.0.0-dev.20251126.1",
     "eslint": "^9.26.0",

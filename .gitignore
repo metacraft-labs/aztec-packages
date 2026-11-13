@@ -27,19 +27,17 @@ tmux-client-*.log
 joblog.txt
 .logged_test_flakes
 
-docs/.yarn/install-state.gz
-docs/docs/protocol-specs/public-vm/gen/
 
 __pycache__
 
 *.local.md
 .claude/settings.local.json
+.codex/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees
 
 # Local opt-in: install nargo from the matching official noir release instead of building from source.
 noir-from-release.flag
-
 # Downstream (metacraft-labs fork): nix / direnv working state. flake.nix,
 # flake.lock, nix/ and .envrc are tracked; what direnv and nix-build leave
 # behind is not.
@@ -49,3 +47,5 @@ noir-from-release.flag
 
 # Repro development environment cache
 .repro/
+npm-release
+

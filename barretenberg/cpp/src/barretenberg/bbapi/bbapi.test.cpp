@@ -6,6 +6,7 @@
 #include "barretenberg/common/assert.hpp"
 #include "barretenberg/common/serialize.hpp"
 #include "barretenberg/common/utils.hpp"
+#include "barretenberg/crypto/poseidon2/poseidon2.hpp"
 #include "barretenberg/serialize/test_helper.hpp"
 #include "msgpack/v3/sbuffer_decl.hpp"
 #include <gtest/gtest.h>
@@ -135,6 +136,17 @@ TEST(BBApiInputValidation, ChonkBatchVerifyWrongVkSizeReturnsInvalid)
     EXPECT_FALSE(response.valid);
 }
 
+TEST(Poseidon2AbsorbChain, MatchesNativeSponge)
+{
+    using Sponge = crypto::Poseidon2<crypto::Poseidon2Bn254ScalarFieldParams>::Sponge;
+    const Sponge::State initial_state = { fr(11), fr(12), fr(13), fr(14) };
+    const std::array<Sponge::Block, 2> blocks = { { { fr(1), fr(2), fr(3) }, { fr(4), fr(5), fr(6) } } };
+
+    bbapi::BBApiRequest request{};
+    auto response = bbapi::Poseidon2AbsorbChain{ .state = initial_state, .inputs = to_buffer(blocks) }.execute(request);
+    EXPECT_EQ(response.state, Sponge::absorb_blocks(initial_state, blocks));
+}
+
 // Helper: pack a vector of PrivateExecutionStepRaw into a byte buffer via msgpack.
 namespace {
 std::vector<uint8_t> pack_steps(const std::vector<PrivateExecutionStepRaw>& steps)
@@ -203,6 +215,51 @@ TEST(BBApiInputValidation, MsgpackLoadRejectsTrailingData)
 
     EXPECT_THROW(PrivateExecutionStepRaw::load(tmp), std::invalid_argument);
     std::filesystem::remove(tmp);
+}
+
+TEST(PrivateExecutionStepRaw, SelfDecompressIsIdempotent)
+{
+    const PrivateExecutionStepRaw step{ .bytecode = { 1, 2, 3 }, .witness = { 4, 5 }, .vk = {}, .function_name = "f" };
+    auto tmp = std::filesystem::temp_directory_path() / "bb_test_step_idempotent.msgpack";
+    PrivateExecutionStepRaw::compress_and_save({ step }, tmp);
+
+    auto loaded = PrivateExecutionStepRaw::load(tmp);
+    std::filesystem::remove(tmp);
+    ASSERT_EQ(loaded.size(), 1);
+    loaded[0].self_decompress();
+    loaded[0].self_decompress();
+
+    EXPECT_EQ(loaded[0].bytecode, step.bytecode);
+    EXPECT_EQ(loaded[0].witness, step.witness);
+}
+
+TEST(PrivateExecutionStepRaw, SelfDecompressLeavesUncompressedStepsUnchanged)
+{
+    const PrivateExecutionStepRaw step{ .bytecode = { 1, 2, 3 }, .witness = { 4, 5 }, .vk = {}, .function_name = "f" };
+    auto parsed = PrivateExecutionStepRaw::parse_uncompressed(pack_steps({ step }));
+    ASSERT_EQ(parsed.size(), 1);
+
+    parsed[0].self_decompress();
+
+    EXPECT_EQ(parsed[0].bytecode, step.bytecode);
+    EXPECT_EQ(parsed[0].witness, step.witness);
+}
+
+TEST(PrivateExecutionStepRaw, CompressAndSaveDoesNotRecompressLoadedSteps)
+{
+    const PrivateExecutionStepRaw step{ .bytecode = { 1, 2, 3 }, .witness = { 4, 5 }, .vk = {}, .function_name = "f" };
+    auto first = std::filesystem::temp_directory_path() / "bb_test_step_first.msgpack";
+    auto second = std::filesystem::temp_directory_path() / "bb_test_step_second.msgpack";
+    PrivateExecutionStepRaw::compress_and_save({ step }, first);
+
+    PrivateExecutionStepRaw::compress_and_save(PrivateExecutionStepRaw::load(first), second);
+    auto reloaded = PrivateExecutionStepRaw::load_and_decompress(second);
+    std::filesystem::remove(first);
+    std::filesystem::remove(second);
+
+    ASSERT_EQ(reloaded.size(), 1);
+    EXPECT_EQ(reloaded[0].bytecode, step.bytecode);
+    EXPECT_EQ(reloaded[0].witness, step.witness);
 }
 
 // Regression tests for AesEncrypt/AesDecrypt input validation.

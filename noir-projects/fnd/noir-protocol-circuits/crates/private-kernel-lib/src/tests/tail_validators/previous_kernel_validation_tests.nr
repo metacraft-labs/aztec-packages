@@ -6,6 +6,32 @@ use types::{
     traits::{Empty, FromField},
 };
 
+// --- min_revertible_side_effect_counter ---
+
+#[test]
+fn unset_min_revertible_side_effect_counter() {
+    // No private call ended the setup phase: every side effect is non-revertible.
+    let mut builder = TestBuilder::new();
+    builder.previous_kernel.min_revertible_side_effect_counter = 0;
+    builder.previous_kernel.claimed_revertible_counter = 0;
+    let _ = builder.execute();
+}
+
+#[test]
+fn set_min_revertible_side_effect_counter() {
+    let mut builder = TestBuilder::new();
+    builder.previous_kernel.end_setup();
+    let _ = builder.execute();
+}
+
+#[test(should_fail_with = "claimed_revertible_counter does not match min_revertible_side_effect_counter")]
+fn mismatch_claimed_revertible_counter() {
+    let mut builder = TestBuilder::new();
+    builder.previous_kernel.min_revertible_side_effect_counter = 123;
+    builder.previous_kernel.claimed_revertible_counter = 4567;
+    let _ = builder.execute();
+}
+
 // --- validation_requests ---
 
 #[test(should_fail_with = "Non empty note hash read requests")]
@@ -79,7 +105,7 @@ fn non_empty_note_hash_beyond_claimed_length() {
     let mut array = builder.previous_kernel.note_hashes.storage();
     // Add a non-empty note hash beyond the claimed length.
     array[5] = array[1];
-    builder.previous_kernel.note_hashes = BoundedVec::from_parts_unchecked(array, 3);
+    builder.previous_kernel.note_hashes = BoundedVec::from_parts(array, 3);
 
     let _ = builder.execute();
 }
@@ -103,7 +129,20 @@ fn non_empty_nullifier_beyond_claimed_length() {
     let mut array = builder.previous_kernel.nullifiers.storage();
     // Add a non-empty nullifier beyond the claimed length.
     array[5] = array[1];
-    builder.previous_kernel.nullifiers = BoundedVec::from_parts_unchecked(array, 4);
+    builder.previous_kernel.nullifiers = BoundedVec::from_parts(array, 4);
+
+    let _ = builder.execute();
+}
+
+#[test]
+fn nullifier_linked_to_note_hash_after_end_setup() {
+    let mut builder = TestBuilder::new();
+
+    // Every note hash in a private-only tx is non-revertible, including one created after the phase change.
+    builder.previous_kernel.end_setup();
+    builder.previous_kernel.append_siloed_unique_note_hashes(1);
+    let note_hash = builder.previous_kernel.note_hashes.get(0);
+    builder.previous_kernel.add_siloed_nullifier_for_note_hash(456, note_hash.innermost());
 
     let _ = builder.execute();
 }
@@ -159,6 +198,40 @@ fn invalid_l2_to_l1_msg_recipient() {
     let _ = builder.execute();
 }
 
+#[test]
+fn can_run_with_l2_to_l1_msgs() {
+    let mut builder = TestBuilder::new();
+
+    builder.previous_kernel.append_l2_to_l1_msgs(3);
+
+    let _ = builder.execute();
+}
+
+#[test(should_fail_with = "array is not dense")]
+fn empty_l2_to_l1_msg_as_valid_item() {
+    let mut builder = TestBuilder::new();
+
+    builder.previous_kernel.append_l2_to_l1_msgs(2);
+    // Add an L2 to L1 message that is empty once exposed to public.
+    builder.previous_kernel.l2_to_l1_msgs.push(Scoped::empty());
+
+    let _ = builder.execute();
+}
+
+#[test(should_fail_with = "array is not dense")]
+fn zero_scope_l2_to_l1_msg_as_valid_item() {
+    let mut builder = TestBuilder::new();
+
+    builder.previous_kernel.append_l2_to_l1_msgs(2);
+    // The tx base rollup ends the message array at the first zero contract address, so a message
+    // scoped to zero would truncate the count even though its recipient and content are not empty.
+    let mut l2_to_l1_msg = builder.previous_kernel.l2_to_l1_msgs.pop();
+    l2_to_l1_msg.contract_address = AztecAddress::zero();
+    builder.previous_kernel.l2_to_l1_msgs.push(l2_to_l1_msg);
+
+    let _ = builder.execute();
+}
+
 #[test(should_fail_with = "array is not trimmed")]
 fn non_empty_l2_to_l1_msg_recipient_beyond_claimed_length() {
     let mut builder = TestBuilder::new();
@@ -167,7 +240,7 @@ fn non_empty_l2_to_l1_msg_recipient_beyond_claimed_length() {
     let mut array = builder.previous_kernel.l2_to_l1_msgs.storage();
     // Add a non-empty recipient to an L2 to L1 message beyond the claimed length.
     array[5].inner.inner.recipient = array[0].innermost().recipient;
-    builder.previous_kernel.l2_to_l1_msgs = BoundedVec::from_parts_unchecked(array, 2);
+    builder.previous_kernel.l2_to_l1_msgs = BoundedVec::from_parts(array, 2);
 
     let _ = builder.execute();
 }
@@ -180,7 +253,7 @@ fn non_empty_l2_to_l1_msg_content_beyond_claimed_length() {
     let mut array = builder.previous_kernel.l2_to_l1_msgs.storage();
     // Add a non-empty content to an L2 to L1 message beyond the claimed length.
     array[5].inner.inner.content = array[0].innermost().content;
-    builder.previous_kernel.l2_to_l1_msgs = BoundedVec::from_parts_unchecked(array, 2);
+    builder.previous_kernel.l2_to_l1_msgs = BoundedVec::from_parts(array, 2);
 
     let _ = builder.execute();
 }
@@ -193,7 +266,7 @@ fn non_empty_l2_to_l1_msg_contract_address_beyond_claimed_length() {
     let mut array = builder.previous_kernel.l2_to_l1_msgs.storage();
     // Add a non-empty contract address to an L2 to L1 message beyond the claimed length.
     array[5].contract_address = array[0].contract_address;
-    builder.previous_kernel.l2_to_l1_msgs = BoundedVec::from_parts_unchecked(array, 2);
+    builder.previous_kernel.l2_to_l1_msgs = BoundedVec::from_parts(array, 2);
 
     let _ = builder.execute();
 }
@@ -231,7 +304,7 @@ fn non_empty_private_log_length_beyond_claimed_length() {
     let mut array = builder.previous_kernel.private_logs.storage();
     // Add a private log with non-zero length beyond the claimed length.
     array[5].inner.inner.log.length = 1;
-    builder.previous_kernel.private_logs = BoundedVec::from_parts_unchecked(array, 2);
+    builder.previous_kernel.private_logs = BoundedVec::from_parts(array, 2);
 
     let _ = builder.execute();
 }
@@ -244,7 +317,7 @@ fn non_empty_private_log_fields_beyond_claimed_length() {
     let mut array = builder.previous_kernel.private_logs.storage();
     // Add a private log with non-empty fields beyond the claimed length.
     array[5].inner.inner.log.fields[2] = 1;
-    builder.previous_kernel.private_logs = BoundedVec::from_parts_unchecked(array, 2);
+    builder.previous_kernel.private_logs = BoundedVec::from_parts(array, 2);
 
     let _ = builder.execute();
 }
@@ -275,7 +348,7 @@ fn non_empty_contract_class_log_length_beyond_claimed_length() {
     let mut array = builder.previous_kernel.contract_class_logs_hashes.storage();
     // Add a contract class log with non-zero length beyond the claimed length.
     array[0].inner.inner.length = 1;
-    builder.previous_kernel.contract_class_logs_hashes = BoundedVec::from_parts_unchecked(array, 0);
+    builder.previous_kernel.contract_class_logs_hashes = BoundedVec::from_parts(array, 0);
 
     let _ = builder.execute();
 }
@@ -287,7 +360,7 @@ fn non_empty_contract_class_log_hash_beyond_claimed_length() {
     let mut array = builder.previous_kernel.contract_class_logs_hashes.storage();
     // Add a contract class log with non-empty log hash value beyond the claimed length.
     array[0].inner.inner.value = 1;
-    builder.previous_kernel.contract_class_logs_hashes = BoundedVec::from_parts_unchecked(array, 0);
+    builder.previous_kernel.contract_class_logs_hashes = BoundedVec::from_parts(array, 0);
 
     let _ = builder.execute();
 }
@@ -299,7 +372,7 @@ fn non_empty_contract_class_log_contract_address_beyond_claimed_length() {
     let mut array = builder.previous_kernel.contract_class_logs_hashes.storage();
     // Add a contract class log with non-empty contract address beyond the claimed length.
     array[0].contract_address = AztecAddress::from_field(1);
-    builder.previous_kernel.contract_class_logs_hashes = BoundedVec::from_parts_unchecked(array, 0);
+    builder.previous_kernel.contract_class_logs_hashes = BoundedVec::from_parts(array, 0);
 
     let _ = builder.execute();
 }

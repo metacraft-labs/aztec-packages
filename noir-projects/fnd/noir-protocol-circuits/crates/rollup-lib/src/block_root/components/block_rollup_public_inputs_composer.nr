@@ -12,7 +12,6 @@ use types::{
     constants::{ARCHIVE_HEIGHT, L1_TO_L2_MSG_TREE_HEIGHT},
     merkle_tree::append_only_tree,
     traits::Hash,
-    utils::arrays::assert_trailing_zeros,
 };
 
 pub struct BlockRollupPublicInputsComposer {
@@ -26,6 +25,7 @@ pub struct BlockRollupPublicInputsComposer {
     end_sponge_blob: SpongeBlob,
     timestamp: u64,
     out_hash: Field,
+    tx_effects_tree_root: Field,
     accumulated_fees: Field,
     accumulated_mana_used: Field,
     num_txs: u16,
@@ -63,6 +63,7 @@ impl BlockRollupPublicInputsComposer {
             timestamp,
             // The followings are 0 since there are no tx effects in this block.
             out_hash: 0,
+            tx_effects_tree_root: 0,
             accumulated_fees: 0,
             accumulated_mana_used: 0,
             num_txs: 0,
@@ -100,6 +101,9 @@ impl BlockRollupPublicInputsComposer {
             end_sponge_blob: rollup.end_sponge_blob,
             timestamp: global_variables.timestamp,
             out_hash: rollup.out_hash,
+            // For a single tx, this is the tx's leaf, left unhashed: the 1-leaf tree convention of
+            // `UnbalancedMerkleTree`. For more txs, it is the root accumulated through the tx merges.
+            tx_effects_tree_root: rollup.accumulated_tx_effects_tree_root,
             accumulated_fees: rollup.accumulated_fees,
             accumulated_mana_used: rollup.accumulated_mana_used,
             num_txs: rollup.num_txs,
@@ -137,9 +141,6 @@ impl BlockRollupPublicInputsComposer {
     ) -> Self {
         self.previous_l1_to_l2 = previous_l1_to_l2;
         self.bundle_applied = true;
-
-        // Real messages occupy the leading lanes; everything past `num_msgs` is zero padding.
-        assert_trailing_zeros(bundle.messages, bundle.num_msgs);
 
         // Append the real leaves to the l1-to-l2 message tree at its current (compact, unaligned) next-available index.
         self.new_l1_to_l2 = append_only_tree::append_leaves_to_snapshot::<L1_TO_L2_MSG_TREE_HEIGHT, _>(
@@ -270,6 +271,7 @@ impl BlockRollupPublicInputsComposer {
             last_archive,
             state,
             sponge_blob_hash,
+            tx_effects_tree_root: self.tx_effects_tree_root,
             global_variables,
             total_fees: self.accumulated_fees,
             total_mana_used: self.accumulated_mana_used,

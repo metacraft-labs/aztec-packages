@@ -60,9 +60,12 @@ import {TransientSlot} from "@oz/utils/TransientSlot.sol";
  *      4. Seed Management:
  *         - Sample seeds determine committee and proposer selection for each epoch
  *         - Seeds use prevrandao from L1 blocks combined with epoch number for unpredictability
- *         - Prevrandao are set 2 epochs in advance to prevent last-minute manipulation and provide L1-reorg resistance
- *         - First two epochs use randao values (type(uint224).max) for bootstrap (this results in the committee
- *           being predictable in the first 2 epochs which is considered acceptable when bootstrapping the network)
+ *         - Prevrandao is checkpointed once per epoch and read `lagInEpochsForRandao` epochs later to prevent
+ *           last-minute manipulation and provide L1-reorg resistance
+ *         - The first `lagInEpochsForRandao` epochs sample before the genesis checkpoint and so use a zero randao,
+ *           and the epochs after them use the deployment block's prevrandao until a later checkpoint is recorded
+ *           (this results in the committee being predictable in those epochs, which is considered acceptable when
+ *           bootstrapping the network)
  *
  *      5. Caching and Optimization:
  *         - Transient storage caches proposer computations within the same transaction
@@ -81,7 +84,7 @@ import {TransientSlot} from "@oz/utils/TransientSlot.sol";
  *      - Committee selection happens before epoch start, preventing manipulation
  *      - Signature verification ensures only legitimate committee members can attest
  *      - Committee commitments prevent committee substitution attacks
- *      - Two-epoch delay in seed setting prevents last-minute influence and provides L1-reorg resistance
+ *      - The `lagInEpochsForRandao` seed delay prevents last-minute influence and provides L1-reorg resistance
  *
  *      Time-based Architecture:
  *      - Epochs define committee boundaries (committee stable within epoch)
@@ -128,8 +131,7 @@ library ValidatorSelectionLib {
    * @notice Initializes the validator selection system with target committee size
    * @dev It is HIGHLY recommended to use lagInEpochsForValidatorSet > lagInEpochsForRandao, to avoid sequencer bias
    *      but we allow them being equal because it makes test networks faster to kick off.
-   * @dev Sets up the initial configuration and bootstrap seeds for the first two epochs.
-   *      The first two epochs use maximum seed values for startup.
+   * @dev Sets up the initial configuration and records the genesis RANDAO checkpoint from the deployment block.
    * @param _targetCommitteeSize The desired number of validators in each epoch's committee
    */
   function initialize(uint256 _targetCommitteeSize, uint256 _lagInEpochsForValidatorSet, uint256 _lagInEpochsForRandao)
@@ -325,9 +327,11 @@ library ValidatorSelectionLib {
    * @custom:reverts Errors.ValidatorSelection__InvalidCommitteeCommitment if reconstructed committee doesn't match
    * stored commitment
    * @custom:reverts Errors.ValidatorSelection__EpochNotStable if the requested epoch is not stable
+   * @return The reconstructed committee, empty if the target committee size is 0
    */
   function verifyAttestations(Epoch _epochNumber, CommitteeAttestations memory _attestations, bytes32 _digest)
     internal
+    returns (address[] memory)
   {
     (bytes32 committeeCommitment, uint256 targetCommitteeSize) = getCommitteeCommitmentAt(_epochNumber);
 
@@ -335,7 +339,7 @@ library ValidatorSelectionLib {
     // Note: This generally only happens in test setups; In production, the target committee is non-zero,
     // and one can see in `sampleValidators` that we will revert if the target committee size is not met.
     if (targetCommitteeSize == 0) {
-      return;
+      return new address[](0);
     }
 
     VerifyStack memory stack = VerifyStack({
@@ -392,6 +396,8 @@ library ValidatorSelectionLib {
     if (reconstructedCommitment != committeeCommitment) {
       revert Errors.ValidatorSelection__InvalidCommitteeCommitment(reconstructedCommitment, committeeCommitment);
     }
+
+    return stack.reconstructedCommittee;
   }
 
   /**
